@@ -1,8 +1,4 @@
 from FusionNet import * 
-import numpy as np
-import matplotlib
-matplotlib.use('Qt5Agg')
-import matplotlib.pyplot as plt
 from dataset import *
 
 if __name__ == '__main__':  

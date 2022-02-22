@@ -1,12 +1,16 @@
 import os
 import sys
+import argparse
 import tifffile
 import numpy as np
 from PIL import Image
 from pycocotools import coco
-# import matplotlib
-# matplotlib.use('Qt5Agg')
-# import matplotlib.pyplot as plt
+
+import torch
+import numpy as np
+from torch.utils.data import Dataset
+import cv2   
+from scipy.ndimage.interpolation import map_coordinates
 
 
 class HiddenPrints:
@@ -223,6 +227,3 @@ def stack_orient(dir, square=False):
         for oriented_filename in oriented_filenames:
             file_line = f'{oriented_filename}\n'
             oriented_filename_file.write(file_line)
-
-    # plt.imshow(oriented_array[800,:,:], cmap='gray', vmin=0, vmax=255)
-    # plt.show()

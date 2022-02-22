@@ -1,17 +1,17 @@
-from __future__ import print_function, division
-import os
-import torch
-import pandas as pd
-from skimage import io, transform
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
+#from __future__ import print_function, division
+#import os
+#import pandas as pd
+#from skimage import io, transform
+
+#import torch
+#import numpy as np
+#from torch.utils.data import Dataset
+#import cv2   
+#from scipy.ndimage.interpolation import map_coordinates
 from utils import *
-import cv2   
 # import matplotlib
 # matplotlib.use('Qt5Agg')
 # import matplotlib.pyplot as plt
-from scipy.ndimage.interpolation import map_coordinates
 
 
 class LIVECell(Dataset):
@@ -119,43 +119,20 @@ class LocalDeform(object):
         image, annot = sample['image'], sample['annot']
         shape = image.shape
 
-        du = np.random.uniform(-self.ampl, self.ampl, size=self.size)
-        dv = np.random.uniform(-self.ampl, self.ampl, size=self.size)
+        dU = np.random.uniform(-self.ampl, self.ampl, size=self.size)
+        dV = np.random.uniform(-self.ampl, self.ampl, size=self.size)
 
-        du[ 0,:] = 0; du[-1,:] = 0; du[:, 0] = 0; du[:,-1] = 0
-        dv[ 0,:] = 0; dv[-1,:] = 0; dv[:, 0] = 0; dv[:,-1] = 0
+        dU[ 0,:] = 0; dU[-1,:] = 0; dU[:, 0] = 0; dU[:,-1] = 0
+        dV[ 0,:] = 0; dV[-1,:] = 0; dV[:, 0] = 0; dV[:,-1] = 0
 
-        # plt.quiver(du, dv)
-        # plt.axis('off')
-        # plt.show()
-        # plt.clf()
-
-        DU = cv2.resize(du, (shape[0], shape[1])) 
-        DV = cv2.resize(dv, (shape[0], shape[1])) 
+        dU = cv2.resize(dU, (shape[0], shape[1])) 
+        dV = cv2.resize(dV, (shape[0], shape[1])) 
         
         X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]))
-        indices = np.reshape(Y+DV, (-1, 1)), np.reshape(X+DU, (-1, 1))
+        indices = np.reshape(Y+dV, (-1, 1)), np.reshape(X+dU, (-1, 1))
    
         image = map_coordinates(image, indices, order=1).reshape(shape)
         annot = map_coordinates(annot, indices, order=1).reshape(shape)
-        
-        # Show image
-        # plt.imshow(np.hstack( (np.squeeze(image), 
-        #                     np.squeeze(deformed_image), 
-        #                     np.squeeze(image-deformed_image)
-        #                     ), 
-        #                     ), cmap = plt.get_cmap('gray'))
-        # plt.axis('off')
-        # plt.show()
-
-        # Show label
-        # plt.imshow(np.hstack( (np.squeeze(annot), 
-        #                     np.squeeze(deformed_annot), 
-        #                     np.squeeze(annot-deformed_annot)
-        #                     ), 
-        #                     ), cmap = plt.get_cmap('gray'))
-        # plt.axis('off')
-        # plt.show()
 
         return {'image': image, 'annot': annot}
 
@@ -169,31 +146,9 @@ class BoundaryExtension(object):
 
     def __call__(self, sample):
         image, annot = sample['image'], sample['annot']
-        shape = image.shape
-
-        image_vflip = np.flip(image, 0)
-        image_hflip = np.flip(image, 1)
-        image_vhflip = np.flip(np.flip(image, 1),0)
-
-        annot_vflip = np.flip(annot, 0)
-        annot_hflip = np.flip(annot, 1)
-        annot_vhflip = np.flip(np.flip(annot, 1),0)
-
-        image_left = np.vstack((image_vhflip,image_hflip,image_vhflip))
-        image_middle = np.vstack((image_vflip,image,image_vflip))
-        image_right = np.vstack((image_vhflip,image_hflip,image_vhflip))
-
-        annot_left = np.vstack((annot_vhflip,annot_hflip,annot_vhflip))
-        annot_middle = np.vstack((annot_vflip,annot,annot_vflip))
-        annot_right = np.vstack((annot_vhflip,annot_hflip,annot_vhflip))
-
-        image = np.hstack((image_left,image_middle,image_right))
-        annot = np.hstack((annot_left,annot_middle,annot_right))
-
-        image = image[shape[0]-self.ext : 2*shape[0]+self.ext,
-                      shape[1]-self.ext : 2*shape[1]+self.ext] 
-        annot = annot[shape[0]-self.ext : 2*shape[0]+self.ext,
-                      shape[1]-self.ext : 2*shape[1]+self.ext] 
+        
+        image = np.pad(image, self.ext, mode='reflect')
+        annot = np.pad(annot, self.ext, mode='reflect')
 
         return {'image': image, 'annot': annot}
 
