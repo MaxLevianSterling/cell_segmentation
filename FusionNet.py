@@ -1,3 +1,4 @@
+import torch.nn.init as init
 from Basic_blocks import * 
 
 
@@ -68,7 +69,10 @@ class FusionGenerator(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                m.weight.data.normal_(0.0, 0.02)
+                init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity = 'relu') 
+                # Choosing 'fan_out' preserves the magnitudes in the backwards pass.
+                # Backwards pass more chaotic because different celltypes, magnitudes
+                #m.weight.data.normal_(0.0, 0.02)
                 m.bias.data.fill_(0)
             
             elif isinstance(m, nn.BatchNorm2d):

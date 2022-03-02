@@ -1,6 +1,10 @@
-from utils import *
-#import argparse
-#import os
+import argparse
+import os
+from utils import HiddenPrints
+from utils import stack_tifs
+from utils import tif_stack2arr
+from utils import json2array
+from utils import stack_orient
 
 
 parser = argparse.ArgumentParser(description='Preprocesses data if necessary')
@@ -16,6 +20,12 @@ parser.add_argument('-s',
                     nargs='?',
                     default='trial',
                     help='The data subset to preprocess')
+parser.add_argument('-o',
+                    '--oriented',
+                    type=bool,
+                    nargs='?',
+                    default=False,
+                    help='Construct all orientations offline')
 args = parser.parse_args()
 
 """Preprocesses LIVECell image and annotation data
@@ -91,9 +101,10 @@ else:
         print('\tMissing array. Creating now...')
         tif_stack2arr(img_folder)
 
-    if not img_var_oriented_arr_exists or not img_var_oriented_filenames_exists:
-        print('\tMissing oriented array or oriented filenames. Creating now...')
-        stack_orient(img_folder)
+    if args.oriented:
+        if not img_var_oriented_arr_exists or not img_var_oriented_filenames_exists:
+            print('\tMissing oriented array or oriented filenames. Creating now...')
+            stack_orient(img_folder)
 
 #########################################################################################################
 # Annotation data
@@ -142,6 +153,7 @@ else:
         print('\tMissing array. Creating now...')
         tif_stack2arr(ann_folder)
 
-    if not ann_var_oriented_arr_exists or not ann_var_oriented_filenames_exists:
-        print('\tMissing oriented array or oriented filenames. Creating now...')
-        stack_orient(ann_folder)
+    if args.oriented:
+        if not ann_var_oriented_arr_exists or not ann_var_oriented_filenames_exists:
+            print('\tMissing oriented array or oriented filenames. Creating now...')
+            stack_orient(ann_folder)
