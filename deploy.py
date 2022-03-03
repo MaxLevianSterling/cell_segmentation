@@ -6,12 +6,7 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 from FusionNet import * 
 from datasets import LIVECell
-from image_transforms import RandomCrop
-from image_transforms import RandomOrientation
-from image_transforms import LocalDeform
-from image_transforms import BoundaryExtension
 from image_transforms import Normalize
-from image_transforms import Noise
 from image_transforms import ToTensor
 from utils import path_gen
 
@@ -21,7 +16,7 @@ def train(
     data_set = 'LIVECell',
     data_subset = 'trial',
     model = '1',
-    load_snapshot = 0,
+    load_snapshot = 50,
     save_snapshots = True,
     batch_size = 16,
     num_workers = 2, 
@@ -117,14 +112,12 @@ def train(
     with torch.no_grad():
 
         # Initiate custom DataSet() instance
-        LIVECell_test_dset = LIVECell(
+        LIVECell_deploy_dset = LIVECell(
             path=path,
             data_set=data_set,
             data_subset=data_subset,
+            deploy=True,
             transform=transforms.Compose([
-                RandomCrop(output_size=512),
-                RandomOrientation(),
-                BoundaryExtension(ext=64),
                 Normalize(),
                 ToTensor()
             ])

@@ -15,10 +15,10 @@ class RandomCrop(object):
             self.output_size = output_size
 
     def __call__(self, sample):
-        image, annot = sample['image'], sample['annot']
+        values = [value for value in sample.values()]
         new_h, new_w = self.output_size
 
-        true_points = np.argwhere(image)
+        true_points = np.argwhere(values[0])
         bottom_right = true_points.max(axis=0)
 
         if bottom_right[0] - new_h > -1:
@@ -28,30 +28,31 @@ class RandomCrop(object):
             left = np.random.randint(0, bottom_right[1] + 1 - new_w)
         else: left = 0
 
-        image = image[top: top + new_h,
-                      left: left + new_w]
-        annot = annot[top: top + new_h,
-                      left: left + new_w]
+        for iV in range(len(values)):
+            values[iV] = values[iV][
+                top: top + new_h,
+                left: left + new_w
+            ]
 
-        return {'image': image, 'annot': annot}
+        return {list(sample.keys())[iV]: values[iV] for iV in range(len(values))}
 
 
 class RandomOrientation(object):
     
     def __call__(self, sample):
-        image, annot = sample['image'], sample['annot']
+        values = [value for value in sample.values()]
         mirror = np.random.randint(1, 5)
         n_rotations = np.random.randint(0, 4)
         
         if mirror > 2:
-            image, annot = np.flip(image, 0), np.flip(annot, 0)
+            values = [np.flip(values[iV], 0) for iV in range(len(values))]
         if mirror % 2 == 0:
-            image, annot = np.flip(image, 1), np.flip(annot, 1)
+            values = [np.flip(values[iV], 1) for iV in range(len(values))]
 
-        for rotation in range(n_rotations):
-            image, annot = np.rot90(image), np.rot90(annot)
+        for _ in range(n_rotations):
+            values = [np.rot90(values[iV]) for iV in range(len(values))]
 
-        return {'image': image, 'annot': annot}
+        return {list(sample.keys())[iV]: values[iV] for iV in range(len(values))}
 
 
 class LocalDeform(object):
@@ -68,25 +69,24 @@ class LocalDeform(object):
         self.ampl = ampl
 
     def __call__(self, sample):
-        image, annot = sample['image'], sample['annot']
-        shape = image.shape
+        values = [value for value in sample.values()]
+        shape = values[0].shape
 
-        dU = np.random.uniform(-self.ampl, self.ampl, size=self.size)
-        dV = np.random.uniform(-self.ampl, self.ampl, size=self.size)
+        dS = [np.random.uniform(-self.ampl, self.ampl, size=self.size) for iS in range(2)]
 
-        dU[ 0,:] = 0; dU[-1,:] = 0; dU[:, 0] = 0; dU[:,-1] = 0
-        dV[ 0,:] = 0; dV[-1,:] = 0; dV[:, 0] = 0; dV[:,-1] = 0
+        for iS in range(2):
+            for n in [0, -1]:
+                dS[iS][n, :] = 0
+                dS[iS][:, n] = 0
 
-        dU = cv2.resize(dU, (shape[0], shape[1])) 
-        dV = cv2.resize(dV, (shape[0], shape[1])) 
+        dS = [cv2.resize(dS[iS], (shape[0], shape[1])) for iS in range(2)]       
         
         X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]))
-        indices = np.reshape(Y+dV, (-1, 1)), np.reshape(X+dU, (-1, 1))
-   
-        image = map_coordinates(image, indices, order=1).reshape(shape)
-        annot = map_coordinates(annot, indices, order=1).reshape(shape)
+        indices = np.reshape(Y+dS[1], (-1, 1)), np.reshape(X+dS[0], (-1, 1))
+    
+        values = [map_coordinates(values[iV], indices, order=1).reshape(shape) for iV in range(len(values))]
 
-        return {'image': image, 'annot': annot}
+        return {list(sample.keys())[iV]: values[iV] for iV in range(len(values))}
 
 
 class BoundaryExtension(object):
@@ -97,23 +97,21 @@ class BoundaryExtension(object):
             self.ext = ext
 
     def __call__(self, sample):
-        image, annot = sample['image'], sample['annot']
+        values = [value for value in sample.values()]
         
-        image = np.pad(image, self.ext, mode='reflect')
-        annot = np.pad(annot, self.ext, mode='reflect')
+        values = [np.pad(values[iV], self.ext, mode='reflect') for iV in range(len(values))]
 
-        return {'image': image, 'annot': annot}
+        return {list(sample.keys())[iV]: values[iV] for iV in range(len(values))}
 
 
 class Normalize(object):
     
     def __call__(self, sample):
-        image, annot = sample['image'], sample['annot']
+        values = [value for value in sample.values()]
 
-        image = image.astype(float) / 255
-        annot = annot.astype(float) / 255
+        values = [values[iV].astype(float) / 255 for iV in range(len(values))]
 
-        return {'image': image, 'annot': annot}
+        return {list(sample.keys())[iV]: values[iV] for iV in range(len(values))}
         
 
 class Noise(object):
@@ -123,22 +121,19 @@ class Noise(object):
         self.std = std
 
     def __call__(self, sample):
-        image = sample['image']
-        image_shape = image.shape
+        values = [value for value in sample.values()]
 
-        image = image + np.random.normal(scale=self.std, size=image_shape) 
-        image = np.clip(image, 0, 1)
+        values[0] += np.random.normal(scale=self.std, size=values[0].shape) 
+        values[0] = np.clip(values[0], 0, 1)
 
-        return {'image': image, 'annot': sample['annot']}
+        return {list(sample.keys())[iV]: values[iV] for iV in range(len(values))}
 
 
 class ToTensor(object):
 
     def __call__(self, sample):
-        image, annot = sample['image'], sample['annot']
+        values = [value for value in sample.values()]
 
-        image = np.expand_dims(image, axis=0)
-        annot = np.expand_dims(annot, axis=0)
-        
-        return {'image': torch.from_numpy(image),
-                'annot': torch.from_numpy(annot)}
+        values = [np.expand_dims(values[iV], axis=0) for iV in range(len(values))]
+
+        return {list(sample.keys())[iV]: torch.from_numpy(values[iV]) for iV in range(len(values))}

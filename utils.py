@@ -18,6 +18,7 @@ class HiddenPrints:
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
+
 def path_gen(elmnts, file=False):
     path = ''
     for elmnt in elmnts:
@@ -25,6 +26,7 @@ def path_gen(elmnts, file=False):
     if file:
         path = path[:-1:]
     return path
+
 
 def stack_tifs(dir):
     """Stacks .tif files in a single stack
