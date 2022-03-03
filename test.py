@@ -8,32 +8,28 @@ from FusionNet import *
 from datasets import LIVECell
 from image_transforms import RandomCrop
 from image_transforms import RandomOrientation
-from image_transforms import LocalDeform
 from image_transforms import BoundaryExtension
 from image_transforms import Normalize
-from image_transforms import Noise
 from image_transforms import ToTensor
 from utils import path_gen
 
 
-def train(
+def test(
     path = 'C:/Users/Max-S/tndrg',
     data_set = 'LIVECell',
     data_subset = 'trial',
     model = '1',
-    load_snapshot = 0,
-    save_snapshots = True,
+    load_snapshot = 50,
     batch_size = 16,
     num_workers = 2, 
     pin_memory = True, 
     persistent_workers = True,
-    lr = .0002,
-    epochs = 50,
-    verbosity_interval = 1,
-    save_image_interval = 10,
-    save_snapshot_interval = 1000,
+    loss_verbosity = True,
+    save_images = 10
 ):  
-    """Trains a FusionNet-type neural network
+    """Tests a FusionNet-type neural network quickly,
+        without boosting or full deployment, just to 
+        gauge network performance in terms of loss.
     
     Note:
         Required folder structure:
@@ -55,10 +51,7 @@ def train(
         data_subset (string): training data subset 
         model (string): current model identifier
         load_snapshot (int): training epoch age of saved 
-            snapshot to start training at (default = 0 
-            -> no snapshot loading)
-        save_snapshots (bool): whether to save network
-            snapshots at the specified interval (default = True)
+            snapshot to test (default = 50)
         batch_size (int): data batch size (default = 16)
         num_workers (int): enables multi-process data loading 
             with the specified number of loader worker 
@@ -70,20 +63,16 @@ def train(
             shut down after a dataset has been consumed once, 
             allowing the workers Dataset instances to remain 
             alive. (default = True)
-        lr (float): network learning rate (default = .0002)
-        epochs (int): number of training epochs (default = 50)
-        verbosity_interval (int): epoch interval with which loss
-            is displayed (default = 1)
-        save_image_interval (int): epoch interval with which 
-            example output is saved (default = 10)
-        save_snapshot_interval (int): epoch interval with which 
-            network snapshot is saved (default = 1000)
+        loss_verbosity (bool): show average loss over testing
+            set (default = True)
+        save_images (int): amount of test output images to save
+            (default = 10; max = batch_size)
         
     Returns:
-        (Optional) Example network image outputs at various training 
-            stages in the training results subfolder
-        (Optional) FusionNet snapshots in the models subfolder along 
-            with a log of the loss over epochs
+        (Optional) Example network image outputs in the
+            results subfolder
+        A log of all testing set batch losses in the results 
+            subfolder 
     """
     
     # Generate folder path strings
@@ -100,7 +89,7 @@ def train(
         data_set,
         data_subset,
         model,
-        'training'
+        'testing'
     ])
 
     # Create output directories if missing
@@ -108,11 +97,11 @@ def train(
         os.makedirs(models_folder)
     if not os.path.isdir(results_folder):
         os.makedirs(results_folder)
-    
+
     # Determine whether to use CPU or GPU
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'\tUsing {device.upper()} device')
-
+    
     # Disable gradient calculation
     with torch.no_grad():
 
@@ -129,38 +118,66 @@ def train(
                 ToTensor()
             ])
         )
+
+        # Initiate standard DataLoader() instance
+        dataloader = data.DataLoader(
+            LIVECell_test_dset, 
+            batch_size=batch_size,
+            shuffle=True, 
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers
+        )
+
+        # Initiate FusionNet | TODO: Implement DistributedDataParallel() instead?
+        FusionNet = nn.DataParallel(FusionGenerator(1,1,64)).to(device) #.cuda() originally
+        FusionNet = FusionNet.float()
+
+        # Load trained network
+        FusionNet = torch.load(f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl')
+        print('\nTesting with snapshot at epoch {load_snapshot} of model {model}')
+
+        # Define loss function and optimizer
+        loss_func = nn.SmoothL1Loss()
         
-        # Retrieve item
-        index = 33
-        sample = LIVECell_test_dset[index]
-        image = sample['image']
-        annot = sample['annot']
+        # Test FusionNet
+        loss_log = []
+        for iter, batch in enumerate(dataloader):
 
-        # Loading the saved model
-        model_path = f'{model_folder}FusionNet_snapshot{load_snapshot}.pkl'
-        FusionNet = nn.DataParallel(FusionGenerator(1,1,64)).to(device) 
-        FusionNet.load_state_dict(torch.save(model_path))
-        FusionNet.eval()
+            # Wrap the batch and pass it forward
+            x = Variable(batch['image']).to(device)
+            y_ = Variable(batch['annot']).to(device)
+            y = FusionNet.forward(x.float())
+            
+            # Calculate the loss and note it
+            loss_log.append(loss_func(y, y_))
 
-        # Generate prediction
-        for image in images:
-            for crop in crops:
-                for orientation in orientations:
-                    image = 
-                    prediction = FusionNet(image)
-                    prediction = prediction[64:512+64-1,
-                                            64:512+64-1]
+        # Optional loss verbosity
+        if loss_verbosity:
+            print(f'Loss: {sum(loss_log)/len(loss_log)}')
 
-        # Predicted class value using argmax
-        predicted_class = np.argmax(prediction)
+        # Optional example network image outputs
+        if save_images:
+            for image in range(save_images):
+                v_utils.save_image(
+                    x[image].cpu().data, 
+                    f'{results_folder}original_snapshot{load_snapshot}_image{image}.png'
+                )
+                v_utils.save_image(
+                    y_[image].cpu().data, 
+                    f'{results_folder}label_snapshot{load_snapshot}_image{image}.png'
+                )
+                v_utils.save_image(
+                    y[image].cpu().data, 
+                    f'{results_folder}gen_snapshot{load_snapshot}_image{image}.png'
+                )
+        
+        # Loss log output
+        with open(f'{results_folder}loss.txt', 'w') as outfile:
+            for batch_loss in loss_log:
+                args = f'{loss_log[batch_loss]}\n'
+                outfile.write(args)
 
-        # Reshape image
-        image = image.reshape(28, 28, 1)
-
-        # Show result
-        plt.imshow(image, cmap='gray')
-        plt.title(f'Prediction: {predicted_class} - Actual target: {true_target}')
-        plt.show()
-
+# Run test() if test.py is run directly
 if __name__ == '__main__':
-    deploy()
+    test()

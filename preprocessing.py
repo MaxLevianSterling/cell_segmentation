@@ -38,7 +38,6 @@ Note:
             annotations/
                 <subset>/<.tif files>
                 (<.json file>)
-    Make sure that the image subset folder is complete
 
 Args:
     path (string): input directory path

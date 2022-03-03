@@ -1,12 +1,27 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset
+from utils import path_gen
  
 
 class LIVECell(Dataset):
-    def __init__(self, data_folder, data_subset, transform=None):
-        image_folder = f'{data_folder}images/{data_subset}/variables/'
-        annot_folder = f'{data_folder}annotations/{data_subset}/variables/'
+    def __init__(self, path, data_set, data_subset, transform=None):
+        image_folder = path_gen([
+            path, 
+            'data', 
+            data_set, 
+            'images', 
+            data_subset, 
+            'variables'
+        ])
+        annot_folder = path_gen([
+            path, 
+            'data', 
+            data_set, 
+            'annotations', 
+            data_subset, 
+            'variables'
+        ])
 
         self.image_arr = np.load(f'{image_folder}array.npy')
         self.annot_arr = np.load(f'{annot_folder}array.npy')
