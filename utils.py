@@ -2,6 +2,7 @@ import os
 import cv2
 import sys
 import json
+import torch
 import tifffile
 import numpy as np
 from PIL import Image
@@ -364,6 +365,7 @@ def stack_orient(dir, square=False):
             file_line = f'{oriented_filename}\n'
             oriented_filename_file.write(file_line)
 
+
 def binary2json(dir):
     # Define which colors match which categories in the images
     # category_ids = {
@@ -458,5 +460,4 @@ def binary2json(dir):
         json.dump(predictions, outfile)
     #print(json.dumps(predictions))
 
-
-compute_IoU(r'C:/Users/Max-S/tndrg/Data/LIVECell/annotations/val.json', r'C:/Users/Max-S/tndrg/Data/LIVECell/annotations/val.json')
+#compute_IoU(r'C:/Users/Max-S/tndrg/Data/LIVECell/annotations/val.json', r'C:/Users/Max-S/tndrg/Data/LIVECell/annotations/val.json')

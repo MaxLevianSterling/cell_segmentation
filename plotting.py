@@ -4,6 +4,10 @@
 
         # plt.imshow(array, cmap='gray', vmin=0, vmax=255)
         # plt.show()
+        
+        # for iV in range(len(values)):
+        #     plt.imshow(values[iV], cmap='gray', vmin=0, vmax=255)
+        #     plt.show()
     
         # plt.quiver(du, dv)
         # plt.axis('off')

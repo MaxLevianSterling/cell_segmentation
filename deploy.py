@@ -6,27 +6,20 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 from FusionNet import * 
 from datasets import LIVECell
+from image_transforms import BoundaryExtension
 from image_transforms import Normalize
 from image_transforms import ToTensor
+from image_transforms import CropStack
+from image_transforms import StackOrient
 from utils import path_gen
 
 
-def train(
+def deploy(
     path = 'C:/Users/Max-S/tndrg',
     data_set = 'LIVECell',
     data_subset = 'trial',
     model = '1',
     load_snapshot = 50,
-    save_snapshots = True,
-    batch_size = 16,
-    num_workers = 2, 
-    pin_memory = True, 
-    persistent_workers = True,
-    lr = .0002,
-    epochs = 50,
-    verbosity_interval = 1,
-    save_image_interval = 10,
-    save_snapshot_interval = 1000,
 ):  
     """Trains a FusionNet-type neural network
     
@@ -95,7 +88,7 @@ def train(
         data_set,
         data_subset,
         model,
-        'training'
+        'deployment'
     ])
 
     # Create output directories if missing
@@ -117,32 +110,31 @@ def train(
             data_set=data_set,
             data_subset=data_subset,
             deploy=True,
-            transform=transforms.Compose([
-                Normalize(),
-                ToTensor()
-            ])
+            transform=None
         )
-        
-        # Retrieve item
-        index = 33
-        sample = LIVECell_test_dset[index]
-        image = sample['image']
-        annot = sample['annot']
-
+                  
         # Loading the saved model
-        model_path = f'{model_folder}FusionNet_snapshot{load_snapshot}.pkl'
+        model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl'
         FusionNet = nn.DataParallel(FusionGenerator(1,1,64)).to(device) 
         FusionNet.load_state_dict(torch.save(model_path))
         FusionNet.eval()
 
         # Generate prediction
-        for image in images:
-            for crop in crops:
-                for orientation in orientations:
-                    image = 
-                    prediction = FusionNet(image)
-                    prediction = prediction[64:512+64-1,
-                                            64:512+64-1]
+        for image in LIVECell_deploy_dset:
+            transform=transforms.Compose([
+                CropStack(output_size=512),
+                StackOrient(),
+                BoundaryExtension(ext=64),
+                Normalize(),
+                ToTensor()
+            ]) 
+            image_set = transform(image)
+            crops = [image[]]
+            for orientation in orientations:
+                image = 
+                prediction = FusionNet(image_set['image'][0][])
+                prediction = prediction[64:512+64-1,
+                                        64:512+64-1]
 
         # Predicted class value using argmax
         predicted_class = np.argmax(prediction)

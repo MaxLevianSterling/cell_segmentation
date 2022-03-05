@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import torch.utils.data as data
 import torchvision.utils as v_utils
@@ -24,11 +25,11 @@ def train(
     load_snapshot = 0,
     save_snapshots = True,
     batch_size = 16,
-    num_workers = 2, 
-    pin_memory = True, 
-    persistent_workers = True,
+    num_workers = 0, 
+    pin_memory = False, 
+    persistent_workers = False,
     lr = .0002,
-    epochs = 50,
+    n_epochs = 50,
     verbosity_interval = 1,
     save_image_interval = 10,
     save_snapshot_interval = 1000,
@@ -71,7 +72,7 @@ def train(
             allowing the workers Dataset instances to remain 
             alive. (default = True)
         lr (float): network learning rate (default = .0002)
-        epochs (int): number of training epochs (default = 50)
+        n_epochs (int): number of training epochs (default = 50)
         verbosity_interval (int): epoch interval with which loss
             is displayed (default = 1)
         save_image_interval (int): epoch interval with which 
@@ -154,9 +155,21 @@ def train(
     
     # Train FusionNet
     loss_log = []
-    for epoch in range(epochs):
+    for iE in range(n_epochs):
         for iter, batch in enumerate(dataloader):
             
+            # Display progress
+            epoch_ratio = (iE) / (n_epochs - 1)
+            batch_ratio = (iter) / (len(dataloader) - 1)
+            sys.stdout.write('\r')
+            sys.stdout.write(
+                "Epochs: [{:<{}}] {:.0f}%; Batches: [{:<{}}] {:.0f}%".format(
+                    "=" * int(20*epoch_ratio), 20, 100*epoch_ratio,
+                    "=" * int(20*batch_ratio), 20, 100*batch_ratio
+                )
+            )
+            sys.stdout.flush()
+
             # Set the gradients of the optimized tensor to zero
             optimizer.zero_grad()
 
@@ -174,28 +187,28 @@ def train(
         loss_log.append(loss)
 
         # Optional loss verbosity
-        if epoch % verbosity_interval == 0:
-            print(f'Epoch: {epoch+1}/{epochs}; Loss: {loss}')
+        if iE % verbosity_interval == 0:
+            print(f'Epoch: {iE+1}/{n_epochs}; Loss: {loss}')
 
         # Optional example network image outputs
-        if epoch % save_image_interval == 0:
+        if iE % save_image_interval == 0:
             v_utils.save_image(
                 x[0].cpu().data, 
-                f'{results_folder}original_snapshot{load_snapshot+epoch}_epoch{epoch}.png'
+                f'{results_folder}original_snapshot{load_snapshot+iE}_epoch{iE}.png'
             )
             v_utils.save_image(
                 y_[0].cpu().data, 
-                f'{results_folder}label_snapshot{load_snapshot+epoch}_epoch{epoch}.png'
+                f'{results_folder}label_snapshot{load_snapshot+iE}_epoch{iE}.png'
             )
             v_utils.save_image(
                 y[0].cpu().data, 
-                f'{results_folder}gen_snapshot{load_snapshot+epoch}_epoch{epoch}.png'
+                f'{results_folder}gen_snapshot{load_snapshot+iE}_epoch{iE}.png'
             )
         
         # Optional FusionNet snapshot saving along with loss log
-        if save_snapshots and epoch % save_snapshot_interval == 0:
-            torch.save(FusionNet, f'{models_folder}FusionNet_snapshot{load_snapshot+epoch}.pkl')    
-            with open(f'{results_folder}loss_epoch{epoch}.txt', 'w') as outfile:
+        if save_snapshots and iE % save_snapshot_interval == 0:
+            torch.save(FusionNet, f'{models_folder}FusionNet_snapshot{load_snapshot+iE}.pkl')    
+            with open(f'{results_folder}loss_epoch{iE}.txt', 'w') as outfile:
                 for epoch_loss in loss_log:
                     args = f'{loss_log[epoch_loss]}\n'
                     outfile.write(args)
