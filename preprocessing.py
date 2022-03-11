@@ -12,7 +12,7 @@ parser.add_argument('-p',
                     '--path',
                     type=str,
                     nargs='?',
-                    default='C:/Users/Max-S/tndrg/Data/LIVECell/',
+                    default='/mnt/sdg/maxs/data/LIVECell/',
                     help='The directory path to the data')
 parser.add_argument('-s',
                     '--subset',

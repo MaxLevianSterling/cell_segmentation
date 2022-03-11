@@ -24,14 +24,14 @@ def maxpool():
     return pool
 
 
-def conv_block_3(in_dim, out_dim, act_fn): #Why no act_fn in 3rd layer here?
+def conv_block_3(in_dim, out_dim, act_fn): #Why no act_fn in 3rd layer originally?
     model = nn.Sequential(
         conv_block(in_dim, out_dim, act_fn),
         #Dropout2d(p=0.1, inplace=True)
         conv_block(out_dim, out_dim, act_fn),
         #Dropout2d(p=0.1, inplace=True)
         conv_block(out_dim, out_dim, act_fn)
-#        nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1),
-#        nn.BatchNorm2d(out_dim),
+        # nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1),
+        # nn.BatchNorm2d(out_dim),
     )
     return model

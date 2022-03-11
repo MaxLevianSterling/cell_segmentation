@@ -14,7 +14,7 @@ class Conv_residual_conv(nn.Module):
         self.conv_2 = conv_block_3(self.out_dim, self.out_dim, act_fn)
         self.conv_3 = conv_block(self.out_dim, self.out_dim, act_fn)
 
-    def forward(self, input):
+    def __call__(self, input):
         conv_1 = self.conv_1(input)
         conv_2 = self.conv_2(conv_1)
         res = conv_1 + conv_2
@@ -25,14 +25,14 @@ class Conv_residual_conv(nn.Module):
 class FusionGenerator(nn.Module):
 
     def __init__(self, input_nc, output_nc, ngf):
-        super(FusionGenerator,self).__init__()
+        super(FusionGenerator, self).__init__()
         self.in_dim = input_nc
         self.out_dim = ngf
         self.final_out_dim = output_nc
         act_fn_2 = nn.LeakyReLU(0.2, inplace=True) # Why was leaky relu used in encoding?
         act_fn = nn.ReLU()
 
-        print('\tInitiating FusionNet')
+        print('\tInitiating FusionNet...')
 
         # encoder
 
@@ -62,7 +62,7 @@ class FusionGenerator(nn.Module):
 
         # output
 
-        self.out = nn.Conv2d(self.out_dim,self.final_out_dim, kernel_size=3, stride=1, padding=1)
+        self.out = nn.Conv2d(self.out_dim, self.final_out_dim, kernel_size=3, stride=1, padding=1)
         self.out_2 = nn.Tanh() # Why tanh as last act_fn?
 
         # initialization
@@ -80,7 +80,7 @@ class FusionGenerator(nn.Module):
                 m.bias.data.fill_(0)
 
 
-    def forward(self, input):
+    def __call__(self, input):
 
         down_1 = self.down_1(input)
         pool_1 = self.pool_1(down_1)

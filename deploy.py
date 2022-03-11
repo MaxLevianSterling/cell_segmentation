@@ -1,85 +1,97 @@
 import os
+import sys
 import torch
-import torch.utils.data as data
-import torchvision.utils as v_utils
-import torchvision.transforms as transforms
-from torch.autograd import Variable
-from FusionNet import * 
-from datasets import LIVECell
-from image_transforms import BoundaryExtension
-from image_transforms import Normalize
-from image_transforms import ToTensor
-from image_transforms import CropStack
-from image_transforms import StackOrient
-from utils import path_gen
+import torchvision.transforms   as transforms
+from torch.autograd             import Variable
+from FusionNet                  import * 
+from datasets                   import LIVECell
+from image_transforms           import StackCrop
+from image_transforms           import StackOrient
+from image_transforms           import Padding
+from image_transforms           import ToUnitInterval
+from image_transforms           import ToTensor
+from image_transforms           import Squeeze
+from image_transforms           import ToBinary
+from image_transforms           import Unpadding
+from image_transforms           import StackReorient
+from image_transforms           import StackMean
+from image_transforms           import Uncrop
+from utils                      import path_gen
+from GPUtil                     import getAvailable
+import numpy                    as np
 
 
 def deploy(
-    path = 'C:/Users/Max-S/tndrg',
+    path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
-    data_subset = 'trial',
+    data_subset = 'extra',
+    model_data_set = 'LIVECell',
+    model_data_subset = 'trial',
+    print_separator = '$',
+    gpu_device_ids = getAvailable(
+        limit=100, 
+        maxLoad=0.1, 
+        maxMemory=0.1
+    ),
     model = '1',
-    load_snapshot = 50,
+    load_snapshot = 2,
 ):  
-    """Trains a FusionNet-type neural network
+    """Deploys a FusionNet-type neural network
+    to generate predictions for a testing set
     
     Note:
+        Image data must be grayscale
+        Multi-orientation boosting is performed such that 
+            cropped and reoriented predictions are 
+            overlayed and averaged to generate the final
+            prediction
         Required folder structure:
             <path>/
                 data/
                     <data_set>/
                         images/
                             <data_subset>/<.tif files>
-                        annotations/
-                            <data_subset>/<.tif files>
-                            (<.json file>)
                 models/
                 results/
-        Neural network uses grayscale input
 
     Args:
-        path (string): training data folder
-        data_set (string): training data set 
-        data_subset (string): training data subset 
-        model (string): current model identifier
+        path (string): path to deployment data folder
+        data_set (string): deployment data set 
+        data_subset (string): deployment data subset 
+        model_data_set (string): trained model data set 
+        model_data_subset (string): trained model data subset 
+        print_separator (string): print output separation
+            character (default = '$')
+        gpu_device_ids (list of ints): gpu device ids used
+            (default = <all available GPUs>)
+        model (string): current model identifier (default = 1)
         load_snapshot (int): training epoch age of saved 
-            snapshot to start training at (default = 0 
-            -> no snapshot loading)
-        save_snapshots (bool): whether to save network
-            snapshots at the specified interval (default = True)
-        batch_size (int): data batch size (default = 16)
-        num_workers (int): enables multi-process data loading 
-            with the specified number of loader worker 
-            processes (default = 2) 
-        pin_memory (bool): tensors fetched by DataLoader pinned 
-            in memory, enabling faster data transfer to 
-            CUDA-enabled GPUs.(default = True)
-        persistent_workers (bool): worker processes will not be 
-            shut down after a dataset has been consumed once, 
-            allowing the workers Dataset instances to remain 
-            alive. (default = True)
-        lr (float): network learning rate (default = .0002)
-        epochs (int): number of training epochs (default = 50)
-        verbosity_interval (int): epoch interval with which loss
-            is displayed (default = 1)
-        save_image_interval (int): epoch interval with which 
-            example output is saved (default = 10)
-        save_snapshot_interval (int): epoch interval with which 
-            network snapshot is saved (default = 1000)
-        
+            snapshot to start deployment at (default = 1)
+                
     Returns:
-        (Optional) Example network image outputs at various training 
-            stages in the training results subfolder
-        (Optional) FusionNet snapshots in the models subfolder along 
-            with a log of the loss over epochs
+        Boosted binary cell segmentation predictions in 
+            the results subfolder
     """
+    # Being beautiful is not a crime
+    print('\n', f'{print_separator}' * 87, '\n', sep='')
+
+    # Assign devices if CUDA is available
+    if torch.cuda.is_available(): 
+        device = f'cuda:{gpu_device_ids[0]}' 
+        print(f'\tUsing GPU {gpu_device_ids[0]} as handler for GPUs {gpu_device_ids}...')
+    else: 
+        raise RuntimeError('\n\tAt least one GPU must be available to deploy FusionNet')
     
+    # Indicate how output will be saved
+    print(f'\tBoosted binary cell segmentation predictions will be saved in path/results...')
+    print('\n\t', f'{print_separator}' * 71, '\n', sep='')   
+
     # Generate folder path strings
     models_folder = path_gen([
         path,
         'models',
-        data_set,
-        data_subset,
+        model_data_set,
+        model_data_subset,
         model
     ])
     results_folder = path_gen([
@@ -97,10 +109,6 @@ def deploy(
     if not os.path.isdir(results_folder):
         os.makedirs(results_folder)
     
-    # Determine whether to use CPU or GPU
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f'\tUsing {device.upper()} device')
-
     # Disable gradient calculation
     with torch.no_grad():
 
@@ -112,40 +120,77 @@ def deploy(
             deploy=True,
             transform=None
         )
-                  
-        # Loading the saved model
+
+        # Define prerocessing transforms
+        pretransform=transforms.Compose([
+            StackCrop(input_size=(520,704), output_size=512),
+            StackOrient(),
+            Padding(width=64),
+            ToUnitInterval(),
+            ToTensor()
+        ]) 
+        
+        # Define postrocessing transforms
+        posttransform=transforms.Compose([
+            Squeeze(),
+            Unpadding(width=64),
+            StackReorient(),
+            StackMean(),
+            Uncrop(input_size=512, output_size=(520,704)),
+            ToBinary(cutoff=.5, items=[0])
+        ]) 
+        
+        # Initiate FusionNet
+        FusionNet = nn.DataParallel(
+            FusionGenerator(1,1,64), 
+            device_ids=gpu_device_ids
+        ).to(device=device, dtype=torch.float)
+
+        # Load trained network and set to evaluate
         model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl'
-        FusionNet = nn.DataParallel(FusionGenerator(1,1,64)).to(device) 
-        FusionNet.load_state_dict(torch.save(model_path))
+        FusionNet.load_state_dict(torch.load(model_path))
         FusionNet.eval()
+        print(f'\tDeploying snapshot of epoch {load_snapshot} of model {model} trained on {model_data_set}/{model_data_subset}...')
+        print(f'\tUsing network to segment cells in images from {data_set}/{data_subset}...')       
+        print('\n\t', f'{print_separator}' * 71, '\n', sep='')
 
-        # Generate prediction
-        for image in LIVECell_deploy_dset:
-            transform=transforms.Compose([
-                CropStack(output_size=512),
-                StackOrient(),
-                BoundaryExtension(ext=64),
-                Normalize(),
-                ToTensor()
-            ]) 
-            image_set = transform(image)
-            crops = [image[]]
-            for orientation in orientations:
-                image = 
-                prediction = FusionNet(image_set['image'][0][])
-                prediction = prediction[64:512+64-1,
-                                        64:512+64-1]
+        # Deploy FusionNet
+        predictions = {'images': []}
+        for iI, image in enumerate(LIVECell_deploy_dset):
+            
+            # Preprocess image for boosting
+            image_set = pretransform(image)
 
-        # Predicted class value using argmax
-        predicted_class = np.argmax(prediction)
+            # Feed image set through FusionNet
+            prediction = {'image':[]}
+            for iC in range(len(image_set['image'])):
+                x = Variable(image_set['image'][iC]).to(device=device, dtype=torch.float)
+                y = FusionNet(x)
+                prediction['image'].append(y.detach().to('cpu').numpy())
+            
+            # Prediction boosting with uncropping
+            predictions['images'].append(posttransform(prediction)['image'])
 
-        # Reshape image
-        image = image.reshape(28, 28, 1)
+            # Display progress
+            image_ratio = (iI) / (len(LIVECell_deploy_dset) - 1)
+            sys.stdout.write('\r')
+            sys.stdout.write(
+                "\tImages: [{:<{}}] {:.0f}%".format(
+                    "=" * int(20*image_ratio), 20, 100*image_ratio,
+                )
+            )
+            sys.stdout.flush()
 
-        # Show result
-        plt.imshow(image, cmap='gray')
-        plt.title(f'Prediction: {predicted_class} - Actual target: {true_target}')
-        plt.show()
+        # Save predictions in results folder
+        predictions['images'] = np.stack(predictions['images'], axis=0)
+        np.save(f'{results_folder}prediction_array.npy', predictions['images'])
 
+# Run deploy() if deploy.py is run directly
 if __name__ == '__main__':
+
+    # Kill all processes on GPU 2 and 3
+    os.system("""kill $(nvidia-smi | awk '$5=="PID" {p=1} p && $2 >= 2 && $2 <= 3 {print $5}')""")
+
+    # Run train()
     deploy()
+    print('\n', end='')
