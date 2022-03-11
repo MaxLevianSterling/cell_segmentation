@@ -4,12 +4,17 @@
 
 ## Train Model
 ~~~
-python3 train.py
+python3 -m train
 ~~~
 ## Test Model
 ~~~
-python3 test.py
+python3 -m test
 ~~~
 ## Deploy Model
 ~~~
-python3 deploy.py
+python3 -m deploy
+~~~
+## Evaluate Model
+~~~
+python3 -m eval
+~~~
