@@ -843,10 +843,13 @@ class Uncrop(object):
        
         # Initialize output array
         prediction = [
-            np.repeat(
-                np.zeros((self.output_size), dtype=float), 
-                n_crops_h * n_crops_w, 
-                axis=0
+            np.zeros(
+                (
+                    n_crops_h*n_crops_w, 
+                    self.output_size[0], 
+                    self.output_size[1]
+                ), 
+                dtype=float
             )
             for iV in range(len(values))
         ]
@@ -862,15 +865,18 @@ class Uncrop(object):
                     ] = values[iV][2*iT + iL] 
         
         # Transform zero to NaN
-        prediction = np.where(
-            prediction == 0,
-            np.nan,
-            prediction
-        )
+        prediction = [
+            np.where(
+                prediction[iV] == 0,
+                np.nan,
+                prediction[iV]
+            )
+            for iV in range(len(values))
+        ]
 
         # Merge
         prediction = [
-            np.nanmean(prediction, axis=0)
+            np.nanmean(prediction[iV], axis=0)
             for iV in range(len(values))
         ]
 

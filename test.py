@@ -21,15 +21,17 @@ from inspect                    import getargspec
 def test(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
-    data_subset = 'trial',
+    data_subset = 'test',
+    model_data_set = 'LIVECell',
+    model_data_subset = 'train',
     print_separator = '$',
     gpu_device_ids = getAvailable(
         limit=100,
         maxLoad=0.1,
         maxMemory=0.1
     ),
-    model = '1',
-    load_snapshot = 1,
+    model = '2',
+    load_snapshot = 150,
     batch_size = 'max',
     pin_memory = True, 
     persistent_workers = True,
@@ -57,13 +59,15 @@ def test(
         path (string): path to test data folder
         data_set (string): test data set 
         data_subset (string): test data subset 
+        model_data_set (string): trained model data set 
+        model_data_subset (string): trained model data subset 
         print_separator (string): print output separation
             character (default = '$')
         gpu_device_ids (list of ints): gpu device ids used
             (default = <all available GPUs>)
-        model (string): current model identifier (default = 1)
+        model (string): current model identifier
         load_snapshot (int): training epoch age of saved 
-            snapshot to test (default = 1)
+            snapshot to test
         batch_size (int): data batch size (default = <maximum>)
         pin_memory (bool): tensors fetched by DataLoader pinned 
             in memory, enabling faster data transfer to 
@@ -117,8 +121,8 @@ def test(
     models_folder = path_gen([
         path,
         'models',
-        data_set,
-        data_subset,
+        model_data_set,
+        model_data_subset,
         model
     ])
     results_folder = path_gen([
@@ -170,8 +174,10 @@ def test(
         ).to(device=device, dtype=torch.float)
 
         # Load trained network
-        FusionNet = torch.load(f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl')
-        print('\nTesting with snapshot of epoch {load_snapshot} of model {model}')
+        model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl'
+        FusionNet.load_state_dict(torch.load(model_path))        
+        print(f'\tTesting with snapshot of epoch {load_snapshot} of model {model} trained on {model_data_set}/{model_data_subset}...')
+        print(f'\tUsing network to test on images from {data_set}/{data_subset}...')   
         print('\n\t', f'{print_separator}' * 71, '\n', sep='')
 
         # Define loss function
@@ -216,22 +222,22 @@ def test(
         if save_images:
             for image in range(save_images):
                 v_utils.save_image(
-                    x[image].cpu().data, 
+                    x[image].detach().to('cpu').type(torch.float32), 
                     f'{results_folder}FusionNet_image_snapshot{load_snapshot}_image{image}.png'
                 )
                 v_utils.save_image(
-                    y_[image].cpu().data, 
+                    y_[image].detach().to('cpu').type(torch.float32), 
                     f'{results_folder}FusionNet_annot_snapshot{load_snapshot}_image{image}.png'
                 )
                 v_utils.save_image(
-                    y[image].cpu().data, 
+                    y[image].detach().to('cpu').type(torch.float32), 
                     f'{results_folder}FusionNet_pred_snapshot{load_snapshot}_image{image}.png'
                 )
     
     # Save testing parameters
     testing_variable_names = getargspec(test)[0]
     testing_parameters = getargspec(test)[3] 
-    with open(f'{models_folder}FusionNet_testing_parameters{load_snapshot}.txt', 'w') as outfile:
+    with open(f'{results_folder}FusionNet_testing_parameters{load_snapshot}.txt', 'w') as outfile:
         for iVn, iP in zip(testing_variable_names, testing_parameters):
             args = f'{iVn},{iP}\n'
             outfile.write(args)    

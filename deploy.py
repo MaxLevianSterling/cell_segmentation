@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import torchvision.transforms   as transforms
+import numpy                    as np
 from torch.autograd             import Variable
 from FusionNet                  import * 
 from datasets                   import LIVECell
@@ -18,7 +19,6 @@ from image_transforms           import StackMean
 from image_transforms           import Uncrop
 from utils                      import path_gen
 from GPUtil                     import getAvailable
-import numpy                    as np
 
 
 def deploy(
@@ -26,15 +26,15 @@ def deploy(
     data_set = 'LIVECell',
     data_subset = 'extra',
     model_data_set = 'LIVECell',
-    model_data_subset = 'trial',
+    model_data_subset = 'train',
     print_separator = '$',
     gpu_device_ids = getAvailable(
         limit=100, 
         maxLoad=0.1, 
         maxMemory=0.1
     ),
-    model = '1',
-    load_snapshot = 2,
+    model = '2',
+    load_snapshot = 150,
 ):  
     """Deploys a FusionNet-type neural network
     to generate predictions for a testing set

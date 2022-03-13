@@ -7,13 +7,14 @@ from utils          import path_gen
 from pycocotools    import coco
 from pycocotools    import mask
 
+
 def binary2json(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
     data_subset = 'extra',
     print_separator = '$',
-    model = '1',
-    snapshot = 50
+    model = '2',
+    snapshot = 150
 ):
     """Converts binary predictions to .json COCO
         instance segmentation format
@@ -168,10 +169,10 @@ def binary2json(
 def evaluate(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
-    data_subset = 'train',
+    data_subset = 'extra',
     print_separator = '$',
-    model = '1',
-    snapshot = 50   
+    model = '2',
+    snapshot = 150   
 ):
     """Evaluates cell instance segmentation network output with 
         AP, AFNR, and F1 scores

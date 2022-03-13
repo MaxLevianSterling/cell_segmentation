@@ -32,7 +32,7 @@ def train(
         maxMemory=0.1
     ),
     model = '2',
-    load_snapshot = 0,
+    load_snapshot = 150,
     batch_size = 'max',
     pin_memory = True,
     persistent_workers = True,
@@ -182,7 +182,8 @@ def train(
     if load_snapshot:
         model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl'
         FusionNet.load_state_dict(torch.load(model_path))
-        print('\tSnapshot of model {model} at epoch {load_snapshot} restored...')
+        print(f'\tSnapshot of model {model} at epoch {load_snapshot} restored...')
+        print(f'\tUsing network to train on images from {data_set}/{data_subset}...')
 
     # Define loss function and optimizer
     loss_func = nn.SmoothL1Loss()
