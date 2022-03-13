@@ -1,78 +1,113 @@
-import torch.nn.init as init
-from Basic_blocks import * 
+import torch.nn.init    as init
+from Basic_blocks       import * 
 
 
 class Conv_residual_conv(nn.Module):
+    """Controls one FusionNet residual layer"""
 
     def __init__(self, in_dim, out_dim, act_fn):
+        """Args:
+            in_dim (int): input channel depth
+            out_dim (int): output channel depth
+            act_fn (nn.Module): activation function
+        """
+    
+        # Manage nn.Module inheritance
         super(Conv_residual_conv,self).__init__()
+
+        # Define class variables
         self.in_dim = in_dim
         self.out_dim = out_dim
-        act_fn = act_fn
+        self.act_fn = act_fn
 
-        self.conv_1 = conv_block(self.in_dim, self.out_dim, act_fn)
-        self.conv_2 = conv_block_3(self.out_dim, self.out_dim, act_fn)
-        self.conv_3 = conv_block(self.out_dim, self.out_dim, act_fn)
+        # Define residual layer
+        self.conv_1 = conv_block(self.in_dim, self.out_dim, self.act_fn)
+        self.conv_2 = conv_block_3(self.out_dim, self.out_dim, self.act_fn)
+        self.conv_3 = conv_block(self.out_dim, self.out_dim, self.act_fn)
 
     def __call__(self, input):
+        """Args:
+            input (tensor): BxCx512x512 input tensor
+        """
+        
+        # Calculate residual layer output
         conv_1 = self.conv_1(input)
         conv_2 = self.conv_2(conv_1)
         res = conv_1 + conv_2
         conv_3 = self.conv_3(res)
+        
         return conv_3
 
 
 class FusionGenerator(nn.Module):
+    """Control class generating FusionNet behaviour"""
 
-    def __init__(self, input_nc, output_nc, ngf):
+    def __init__(
+        self, 
+        in_dim, 
+        out_dim, 
+        ngf
+    ):
+        """Args:
+            in_dim (int): input channel depth
+            out_dim (int): output channel depth
+            ngf (int): feature depth factor
+        """
+    
+        # Manage nn.Module inheritance
         super(FusionGenerator, self).__init__()
-        self.in_dim = input_nc
-        self.out_dim = ngf
-        self.final_out_dim = output_nc
-        act_fn_2 = nn.LeakyReLU(0.2, inplace=True) # Why was leaky relu used in encoding?
+        
+        # Initialize class variables
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.ngf = ngf
+
+        # Define activation function
         act_fn = nn.ReLU()
 
+        # Display status
         print('\tInitiating FusionNet...')
 
-        # encoder
-
-        self.down_1 = Conv_residual_conv(self.in_dim, self.out_dim, act_fn)
+        # Define encoder
+        self.down_1 = Conv_residual_conv(self.in_dim, self.ngf, act_fn)
         self.pool_1 = maxpool()
-        self.down_2 = Conv_residual_conv(self.out_dim, self.out_dim * 2, act_fn)
+        self.down_2 = Conv_residual_conv(self.ngf, self.ngf * 2, act_fn)
         self.pool_2 = maxpool()
-        self.down_3 = Conv_residual_conv(self.out_dim * 2, self.out_dim * 4, act_fn)
+        self.down_3 = Conv_residual_conv(self.ngf * 2, self.ngf * 4, act_fn)
         self.pool_3 = maxpool()
-        self.down_4 = Conv_residual_conv(self.out_dim * 4, self.out_dim * 8, act_fn)
+        self.down_4 = Conv_residual_conv(self.ngf * 4, self.ngf * 8, act_fn)
         self.pool_4 = maxpool()
 
-        # bridge
+        # Define bridge
+        self.bridge = Conv_residual_conv(self.ngf * 8, self.ngf * 16, act_fn)
 
-        self.bridge = Conv_residual_conv(self.out_dim * 8, self.out_dim * 16, act_fn)
+        # Define decoder
+        self.deconv_1 = conv_trans_block(self.ngf * 16, self.ngf * 8, act_fn)
+        self.up_1 = Conv_residual_conv(self.ngf * 8, self.ngf * 8, act_fn)
+        self.deconv_2 = conv_trans_block(self.ngf * 8, self.ngf * 4, act_fn)
+        self.up_2 = Conv_residual_conv(self.ngf * 4, self.ngf * 4, act_fn)
+        self.deconv_3 = conv_trans_block(self.ngf * 4, self.ngf * 2, act_fn)
+        self.up_3 = Conv_residual_conv(self.ngf * 2, self.ngf * 2, act_fn)
+        self.deconv_4 = conv_trans_block(self.ngf * 2, self.ngf, act_fn)
+        self.up_4 = Conv_residual_conv(self.ngf, self.ngf, act_fn)
 
-        # decoder
+        # Define output
+        self.out = nn.Conv2d(
+            self.ngf, 
+            self.out_dim, 
+            kernel_size=3, 
+            stride=1, 
+            padding=1
+        )
+        self.out_2 = nn.Tanh()
 
-        self.deconv_1 = conv_trans_block(self.out_dim * 16, self.out_dim * 8, act_fn)
-        self.up_1 = Conv_residual_conv(self.out_dim * 8, self.out_dim * 8, act_fn)
-        self.deconv_2 = conv_trans_block(self.out_dim * 8, self.out_dim * 4, act_fn)
-        self.up_2 = Conv_residual_conv(self.out_dim * 4, self.out_dim * 4, act_fn)
-        self.deconv_3 = conv_trans_block(self.out_dim * 4, self.out_dim * 2, act_fn)
-        self.up_3 = Conv_residual_conv(self.out_dim * 2, self.out_dim * 2, act_fn)
-        self.deconv_4 = conv_trans_block(self.out_dim * 2, self.out_dim, act_fn)
-        self.up_4 = Conv_residual_conv(self.out_dim, self.out_dim, act_fn)
-
-        # output
-
-        self.out = nn.Conv2d(self.out_dim, self.final_out_dim, kernel_size=3, stride=1, padding=1)
-        self.out_2 = nn.Tanh() # Why tanh as last act_fn?
-
-        # initialization
-
+        # Initialize weights and biases
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity = 'relu') 
                 # Choosing 'fan_out' preserves the magnitudes in the backwards pass.
                 # Backwards pass more chaotic because different celltypes, magnitudes
-                #m.weight.data.normal_(0.0, 0.02)
+                # orig: m.weight.data.normal_(0.0, 0.02)
                 m.bias.data.fill_(0)
             
             elif isinstance(m, nn.BatchNorm2d):
@@ -81,7 +116,11 @@ class FusionGenerator(nn.Module):
 
 
     def __call__(self, input):
+        """Args:
+            input (tensor): Bx1x512x512 input tensor
+        """
 
+        # Encode
         down_1 = self.down_1(input)
         pool_1 = self.pool_1(down_1)
         down_2 = self.down_2(pool_1)
@@ -91,8 +130,10 @@ class FusionGenerator(nn.Module):
         down_4 = self.down_4(pool_3)
         pool_4 = self.pool_4(down_4)
 
+        # Bridge
         bridge = self.bridge(pool_4)
 
+        # Decode
         deconv_1 = self.deconv_1(bridge)
         skip_1 = (deconv_1 + down_4)/2
         up_1 = self.up_1(skip_1)
@@ -106,6 +147,7 @@ class FusionGenerator(nn.Module):
         skip_4 = (deconv_4 + down_1)/2
         up_4 = self.up_4(skip_4)
 
+        # Output
         out = self.out(up_4)
         out = self.out_2(out) 
         #out = torch.clamp(out, min=-1, max=1)

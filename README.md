@@ -2,6 +2,10 @@
 
 [FusionNet: A deep fully residual convolutional neural network for image segmentation in connectomics](https://arxiv.org/abs/1612.05360)
 
+## Preprocess data
+~~~
+python3 -m preprocess
+~~~
 ## Train Model
 ~~~
 python3 -m train

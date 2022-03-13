@@ -5,7 +5,7 @@ import torchvision.transforms   as transforms
 from torch.autograd             import Variable
 from FusionNet                  import * 
 from datasets                   import LIVECell
-from image_transforms           import StackCrop
+from image_transforms           import FullCrop
 from image_transforms           import StackOrient
 from image_transforms           import Padding
 from image_transforms           import ToUnitInterval
@@ -72,6 +72,7 @@ def deploy(
         Boosted binary cell segmentation predictions in 
             the results subfolder
     """
+    
     # Being beautiful is not a crime
     print('\n', f'{print_separator}' * 87, '\n', sep='')
 
@@ -123,7 +124,7 @@ def deploy(
 
         # Define prerocessing transforms
         pretransform=transforms.Compose([
-            StackCrop(input_size=(520,704), output_size=512),
+            FullCrop(input_size=(520,704), output_size=512),
             StackOrient(),
             Padding(width=64),
             ToUnitInterval(),
@@ -183,7 +184,7 @@ def deploy(
 
         # Save predictions in results folder
         predictions['images'] = np.stack(predictions['images'], axis=0)
-        np.save(f'{results_folder}prediction_array.npy', predictions['images'])
+        np.save(f'{results_folder}FusionNet_snapshot{load_snapshot}_prediction_array.npy', predictions['images'])
 
 # Run deploy() if deploy.py is run directly
 if __name__ == '__main__':

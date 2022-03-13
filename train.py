@@ -31,8 +31,8 @@ def train(
         maxLoad=0.1, 
         maxMemory=0.1
     ),
-    model = '1',
-    load_snapshot = 25,
+    model = '2',
+    load_snapshot = 0,
     batch_size = 'max',
     pin_memory = True,
     persistent_workers = True,
@@ -96,6 +96,7 @@ def train(
         RuntimeError: At least one GPU must be available to 
             train FusionNet
     """
+
     # Being beautiful is not a crime
     print('\n', f'{print_separator}' * 87, '\n', sep='')
 
@@ -156,7 +157,7 @@ def train(
             Padding(width=64),
             ToUnitInterval(),
             ToBinary(cutoff=.5, items=[1]),
-            Noise(std=.1, items=[0]),
+            Noise(std=.05, items=[0]),
             ToTensor()
         ])
     )

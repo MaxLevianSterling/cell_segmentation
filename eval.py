@@ -2,10 +2,10 @@ import os
 import sys
 import cv2
 import json
-import numpy                    as np
-from utils                      import path_gen
-from pycocotools                import coco
-from pycocotools                import mask
+import numpy        as np
+from utils          import path_gen
+from pycocotools    import coco
+from pycocotools    import mask
 
 def binary2json(
     path = '/mnt/sdg/maxs',
@@ -40,6 +40,7 @@ def binary2json(
         Converted .json COCO instance segmentation file in
             the same folder as the binary array
     """
+    
     # Being beautiful is not a crime
     print('\n', f'{print_separator}' * 70, '\n', sep='')
     print(f'\tConverting binary predictions to .json COCO format...')

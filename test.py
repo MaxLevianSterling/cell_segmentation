@@ -85,6 +85,7 @@ def test(
         RuntimeError: At least one GPU must be available to 
             test FusionNet
     """
+    
     # Being beautiful is not a crime
     print('\n', f'{print_separator}' * 87, '\n', sep='')
 

@@ -2,30 +2,86 @@ import torch.nn as nn
 
 
 def conv_block(in_dim, out_dim, act_fn):
-    model = nn.Sequential(
-        nn.Conv2d(in_dim, out_dim, kernel_size=3, stride=1, padding=1),
+    """Creates the basic FusionNet convolution block
+    
+    Args:
+        in_dim (int): input channel depth
+        out_dim (int): output channel depth
+        act_fn (nn.Module): activation function
+ 
+    Returns:
+        (nn.Sequential()) Basic convolution block
+    """
+
+    block = nn.Sequential(
+        nn.Conv2d(
+            in_dim, 
+            out_dim, 
+            kernel_size=3, 
+            stride=1, 
+            padding=1
+        ),
         act_fn,
         nn.BatchNorm2d(out_dim)
     )
-    return model
+    return block
 
 
-def conv_trans_block(in_dim, out_dim, act_fn): #Why use learnable parameters here?It seems silly.
-    model = nn.Sequential(
-        nn.ConvTranspose2d(in_dim, out_dim, kernel_size=3, stride=2, padding=1, output_padding=1),
+def conv_trans_block(in_dim, out_dim, act_fn):
+    """Creates the basic FusionNet upsampling block
+    
+    Args:
+        in_dim (int): input channel depth
+        out_dim (int): output channel depth
+        act_fn (nn.Module): activation function
+
+    Returns:
+        (nn.Sequential()) Basic upsampling block
+    """
+
+    block = nn.Sequential(
+        nn.ConvTranspose2d(
+            in_dim, 
+            out_dim, 
+            kernel_size=3, 
+            stride=2, 
+            padding=1, 
+            output_padding=1
+        ),
         act_fn,
         nn.BatchNorm2d(out_dim)
     )
-    return model
+    return block
 
 
 def maxpool():
-    pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-    return pool
+    """Creates the basic FusionNet max pooling block
+
+    Returns:
+        (nn.Module) Basic max pooling block
+    """
+
+    block = nn.MaxPool2d(
+        kernel_size=2, 
+        stride=2, 
+        padding=0
+    )
+    return block
 
 
-def conv_block_3(in_dim, out_dim, act_fn): #Why no act_fn in 3rd layer originally?
-    model = nn.Sequential(
+def conv_block_3(in_dim, out_dim, act_fn): 
+    """Creates the combined FusionNet triple convolution block
+
+    Args:
+        in_dim (int): input channel depth
+        out_dim (int): output channel depth
+        act_fn (nn.Module): activation function
+        
+    Returns:
+        (nn.Sequential()) Combined triple convolution block
+    """
+
+    block = nn.Sequential(
         conv_block(in_dim, out_dim, act_fn),
         #Dropout2d(p=0.1, inplace=True)
         conv_block(out_dim, out_dim, act_fn),
@@ -34,4 +90,4 @@ def conv_block_3(in_dim, out_dim, act_fn): #Why no act_fn in 3rd layer originall
         # nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1),
         # nn.BatchNorm2d(out_dim),
     )
-    return model
+    return block

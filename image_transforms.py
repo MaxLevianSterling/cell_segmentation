@@ -167,7 +167,7 @@ class LocalDeform(object):
             for iS in range(2)
         ]
 
-        # Zero out the edges
+        # Zero out edges
         for iS in range(2):
             for n in [0, -1]:
                 dS[iS][n, :] = 0
@@ -495,7 +495,7 @@ class FullCrop(object):
         n_crops_h = ceil(self.input_size[0] / self.output_size[0])
         n_crops_w = ceil(self.input_size[1] / self.output_size[1])
 
-        # Determine the cropping positions
+        # Determine cropping positions
         tops = [
             iCh*self.output_size[0] 
             for iCh in range(n_crops_h-1)
