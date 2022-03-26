@@ -4,6 +4,7 @@ import cv2
 import json
 import numpy        as np
 from utils          import path_gen
+from utils          import HiddenPrints
 from pycocotools    import coco
 from pycocotools    import mask
 
@@ -14,13 +15,14 @@ def binary2json(
     data_subset = 'extra',
     print_separator = '$',
     model = '2',
-    snapshot = 150
+    snapshot = 150,
+    mode = 'eval'
 ):
     """Converts binary predictions to .json COCO
         instance segmentation format
 
-    Note:
-        Category information
+    Note:   
+        Assumes data represent monocultures
         Required folder structure:
             <path>/
                 results/
@@ -36,6 +38,9 @@ def binary2json(
         model (string): current model identifier (default = 1)
         snapshot (int): training epoch age of snapshot used
             for evaluation (default = 50)
+        mode (string): function mode can be 'eval' or 'prep',
+            depending on if the input or output mask array 
+            is used to generate the .json file
  
     Returns:
         Converted .json COCO instance segmentation file in
@@ -43,15 +48,23 @@ def binary2json(
     """
     
     # Being beautiful is not a crime
-    print('\n', f'{print_separator}' * 70, '\n', sep='')
-    print(f'\tConverting binary predictions to .json COCO format...')
+    print('\n', f'{print_separator}' * 71, '\n', sep='')
+    print(f'\tConverting binary masks to .json COCO format...')
     
     # Generate folder path strings
-    data_folder = path_gen([
+    image_folder = path_gen([
         path,
         'data',
         data_set,
         'images',
+        data_subset,
+        'variables'
+    ])
+    annot_folder = path_gen([
+        path,
+        'data',
+        data_set,
+        'annotations',
         data_subset,
         'variables'
     ])
@@ -63,6 +76,55 @@ def binary2json(
         model,
         'deployment'
     ])
+    
+    # Skip if .json file exists already
+    if mode == 'eval':
+        json_exists = os.path.isfile(
+            f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json'
+        )
+        if json_exists:
+            print('\tFile already existed. Continuing...')
+            return
+            
+    # Load binary mask array and filename identifiers
+    if mode == 'eval':
+        arr = np.load(
+            f'{results_folder}FusionNet_snapshot{snapshot}_prediction_array.npy'
+        )
+        with open(f'{image_folder}filenames.txt', 'r') as infile:
+            filenames = []
+            cat_ids = []
+            for line in infile:
+                filenames.append(line.split('\n')[0])
+                cat_ids.append(line.split('_')[0])
+    elif mode == 'prep':
+        arr = np.load(
+            f'{annot_folder}array.npy'
+        )
+        with open(f'{annot_folder}filenames.txt', 'r') as infile:
+            filenames = []
+            cat_ids = []
+            for line in infile:
+                filenames.append(line.split('\n')[0])
+                cat_ids.append(line.split('_')[0])
+
+    # Define cell type category identities:
+    cat_keys = {
+        'A172': 2,
+        'BT474': 4,
+        'BV2': 3,
+        'Huh7': 5,
+        'MCF7': 6,
+        'SHSY5Y': 1,
+        'SkBr3': 7,
+        'SKOV3': 8
+    }
+    
+    # Codify category IDs
+    cat_ids = [
+        cat_keys[cat] 
+        for cat in cat_ids
+    ]
 
     # Initiate .json file structure
     images = []
@@ -89,12 +151,7 @@ def binary2json(
         }
     ]
 
-    # Load binary prediction data with its identifiers
-    arr = np.load(f'{results_folder}FusionNet_snapshot{snapshot}_prediction_array.npy')
-    with open(f'{data_folder}filenames.txt', 'r') as infile:
-        filenames = [line.split('\n')[0] for line in infile]
-
-    # Fill in the 'images' and 'annotations' lists
+    # Fill in the 'images' and 'annotations'
     annotation_id = 0
     for image_id, filename in enumerate(filenames, 1):
 
@@ -144,7 +201,7 @@ def binary2json(
                 annotation = {
                     'id': annotation_id,
                     'image_id': image_id,
-                    'category_id': 1,
+                    'category_id': cat_ids[image_id-1],
                     'segmentation': [segmentation],
                     'area': area,
                     'bbox': bbox,
@@ -153,7 +210,7 @@ def binary2json(
                 annotations.append(annotation)
 
     # Parse everything into .json file structure
-    predictions = {
+    json_file = {
         'images': images,
         'annotations': annotations,
         'categories': categories,
@@ -161,9 +218,18 @@ def binary2json(
         'licenses': licenses
     }
 
+    # Display status
+    print('\n\tSaving .json file...', end='')
+
     # Save .json file
-    with open(f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json', 'w') as outfile:
-        json.dump(predictions, outfile)
+    if mode == 'eval':
+        with open(f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json', 'w') as outfile:
+            json.dump(json_file, outfile)
+    elif mode == 'prep':
+        with open(f'{annot_folder}json.json', 'w') as outfile:
+            json.dump(json_file, outfile)
+
+    print('\n')
 
 
 def evaluate(
@@ -172,7 +238,8 @@ def evaluate(
     data_subset = 'extra',
     print_separator = '$',
     model = '2',
-    snapshot = 150   
+    snapshot = 150,
+    mode = 'from_bin' 
 ):
     """Evaluates cell instance segmentation network output with 
         AP, AFNR, and F1 scores
@@ -184,36 +251,54 @@ def evaluate(
                     <data_set>/
                         annotations/
                             <data_subset>
-                                <data_subset>.json
+                                <.json file>
                 results/
                     <data_set>/<data_subset>/
                         <model>/deployment/
-                            predictions.json
+                            <.json file>
+
     Args:
         path (string): path to training data folder
         data_set (string): training data set
         data_subset (string): training data subset
         print_separator (string): print output separation
-            character (default = '$')
-        model (string): current model identifier (default = 1)
+            character
+        model (string): current model identifier
         snapshot (int): training epoch age of snapshot used
-            for evaluation (default = 50)
-
+            for evaluation
+        mode (string): function mode can be 'original' or 
+            'from_bin', depending on if the .json file used 
+            is the original or generated from binary masks 
+            
     Returns:
-
+        A log of all performance metrics in the results 
+            folder
     """
-    # Being beautiful is not a crime
-    print('\n', f'{print_separator}' * 87, '\n', sep='')
 
-    # Generate path strings
-    gt_filepath = path_gen([
-        path,
-        'models',
-        data_set,
-        'annotations',
-        data_subset,
-        f'{data_subset}.json'
-    ], file=True)
+    # Being beautiful is not a crime
+    print('\n\t', f'{print_separator}' * 55, '\n', sep='')
+
+    # Generate ground truth path string
+    if mode == 'original':
+        gt_filepath = path_gen([
+            path,
+            'data',
+            data_set,
+            'annotations',
+            f'{data_subset}.json'
+        ], file=True)
+    elif mode == 'from_bin':
+        gt_filepath = path_gen([
+            path,
+            'data',
+            data_set,
+            'annotations',
+            data_subset,
+            'variables',
+            'json.json'
+        ], file=True)
+
+    # Generate result folder path string
     results_folder = path_gen([
         path,
         'results',
@@ -224,10 +309,11 @@ def evaluate(
     ])
 
     # Load ground truth and detection .json data
-    gt_json_file = coco.COCO(gt_filepath)       
-    dt_json_file = coco.COCO(
-        f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json'
-    )
+    with HiddenPrints():
+        gt_json_file = coco.COCO(gt_filepath)       
+        dt_json_file = coco.COCO(
+           f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json'
+        )
 
     # Get image IDs
     gt_img_ids = gt_json_file.getImgIds()  
@@ -242,7 +328,7 @@ def evaluate(
     dt_n_images = len(dt_img_ids) 
 
     # Initialize COCO/LIVECell parameters     
-    n_ap_steps = 10,
+    n_ap_steps = 10
     n_cellsizes = 4
 
     # Initialize detection performance dictionary
@@ -281,7 +367,7 @@ def evaluate(
         gt_rle = [gt_json_file.annToRLE(gt_anns_image[i_gt_anns]) for i_gt_anns in range(len(gt_anns_image))]
 
         # Get the IoUs of all detections crossed with all ground truth instances
-        all_ious = mask.iou(dt_rle, gt_rle, [0])  
+        all_ious = mask.iou(dt_rle, gt_rle, [0 for gt in range(len(gt_rle))])  
 
         # Define loop generalisers
         ops = {
@@ -352,14 +438,14 @@ def evaluate(
     ap_iou = np.zeros((n_cellsizes, n_ap_steps), dtype=float)
     for entry in range(1, dt_n_images+1):
         ap_iou += (abs_recall[:, :, entry] - abs_recall[:, :, entry-1]) * cumul_interp_precision[:, :, entry]
-    ap = np.mean(ap_iou, axis=1)
+    ap = np.nanmean(ap_iou, axis=1)
     ar_iou = np.zeros((n_cellsizes, n_ap_steps), dtype=float)
     for entry in range(1, dt_n_images+1):
         ar_iou += (abs_precision[:, :, entry] - abs_precision[:, :, entry-1]) * cumul_interp_recall[:, :, entry]
     afnr_iou = 1 - ar_iou
-    afnr = np.mean(afnr_iou, axis=1)
+    afnr = np.nanmean(afnr_iou, axis=1)
     af1_iou = 2 * ap_iou * ar_iou / (ap_iou + ar_iou) 
-    af1 = np.mean(af1_iou, axis=1)
+    af1 = np.nanmean(af1_iou, axis=1)
 
     with open(f'{results_folder}FusionNet_snapshot{snapshot}_performance_metrics.txt', 'w') as outfile:
         args = f'{ap_iou},{ap},{afnr_iou},{afnr},{af1_iou},{af1}'
@@ -369,9 +455,23 @@ def evaluate(
 # If eval.py is run directly
 if __name__ == '__main__':
     
-    # Convert predictions
-    binary2json()
+    # Convert predictions if necessary
+    binary2json(
+        path = '/mnt/sdg/maxs',
+        data_set = 'LIVECell',
+        data_subset = 'val',
+        model = '2',
+        snapshot = 450,
+        mode = 'eval'
+    )
 
     # Evaluate predictions
-    evaluate()
-    print('\n', end='')
+    evaluate(
+        path = '/mnt/sdg/maxs',
+        data_set = 'LIVECell',
+        data_subset = 'val',
+        model = '2',
+        snapshot = 450,
+        mode = 'from_bin' 
+    )
+    print('\n\n', end='')

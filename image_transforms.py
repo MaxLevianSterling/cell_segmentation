@@ -1,13 +1,18 @@
 import cv2 
 import torch
 import numpy                        as np
+import torchvision.utils            as v_utils
+import torch.nn.functional          as tfunc
 from math                           import ceil
 from utils                          import unpad
+from utils                          import map_tensor_coordinates
+from utils                          import HiddenPrints
 from scipy.ndimage.interpolation    import map_coordinates
+import warnings
 
 
 class RandomCrop(object):
-    """Randomly crops a 2D numpy array"""
+    """Randomly crops input """
 
     def __init__(self, input_size, output_size):
         """ Args:
@@ -31,18 +36,20 @@ class RandomCrop(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:np.array dict): input images
+            sample (string:(HxW np.array or BxCxHxW tensor) 
+                dict): input images
                     
         Returns:
-            (string:np.array dict): output images
+            (string:(HxW np.array or BxCxHxW tensor) dict): 
+                output images
         """    
 
         # Get input dictionary values
         values = [
             value 
             for value in sample.values()
-        ]
-
+        ]    
+        
         # Randomly find cropping position
         if self.input_size[0] - self.output_size[0] > -1:
             top = np.random.randint(
@@ -59,10 +66,28 @@ class RandomCrop(object):
 
         # Crop
         for iV in range(len(values)):
-            values[iV] = values[iV][
-                top: top + self.output_size[0],
-                left: left + self.output_size[1]
-            ]
+            if isinstance(values[iV], np.ndarray) and len(values[iV].shape) == 2:
+                values[iV] = values[iV][
+                    top: top + self.output_size[0],
+                    left: left + self.output_size[1]
+                ]
+            elif torch.is_tensor(values[iV]) and len(values[iV].shape) == 4:
+                values[iV] = values[iV][
+                    :,
+                    :,
+                    top: top + self.output_size[0],
+                    left: left + self.output_size[1]
+                ]
+        
+        # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_crop_image_snapshot_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_crop_annot_snapshot_image.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -71,50 +96,62 @@ class RandomCrop(object):
 
 
 class RandomOrientation(object):
-    """Randomly orients a 2D numpy array into one of
-    eight orientations (all 90 degree rotations and 
-    mirrors)
+    """Randomly orients input into one of eight orientations 
+    (all 90 degree rotations and mirrors)
     """
 
     def __call__(self, sample):
         """ Args:
-            sample (string:np.array dict): input images
+            sample (string:(HxW np.array or BxCxHxW tensor) 
+                dict): input images
                     
         Returns:
-            (string:np.array dict): output images
+            (string:(HxW np.array or BxCxHxW tensor) dict): 
+                output images
         """   
-
+        
         # Get input dictionary values
         values = [
             value 
             for value in sample.values()
         ]
-
+            
         # Randomly select orientation
         mirror = np.random.randint(1, 5)
-        n_rotations = np.random.randint(0, 4)
-        
-        # Vertical flip
-        values = [
-            np.flip(values[iV], 0) 
-            if mirror > 2 
-            else values[iV] 
-            for iV in range(len(values))
-        ]
+        n_rotations = np.random.randint(0, 4)   
 
-        # Horizontal flip
-        values = [
-            np.flip(values[iV], 1) 
-            if mirror % 2 == 0 
-            else values[iV] 
-            for iV in range(len(values))
-        ]
+        for iV in range(len(values)):
+            if isinstance(values[iV], np.ndarray) and len(values[iV].shape) == 2:
 
-        # Counterclockwise rotation
-        values = [
-            np.rot90(values[iV], n_rotations) 
-            for iV in range(len(values))
-        ]
+                # Vertical flip
+                values[iV] = np.flip(values[iV], 0) if mirror > 2 else values[iV]
+
+                # Horizontal flip
+                values[iV] = np.flip(values[iV], 1) if mirror % 2 == 0 else values[iV]
+
+                # Counterclockwise rotation
+                values[iV] = np.rot90(values[iV], n_rotations)
+
+            elif torch.is_tensor(values[iV]) and len(values[iV].shape) == 4:
+                
+                # Vertical flip
+                values[iV] = torch.flip(values[iV], [2]) if mirror > 2 else values[iV]
+
+                # Horizontal flip
+                values[iV] = torch.flip(values[iV], [3]) if mirror % 2 == 0 else values[iV]
+
+                # Counterclockwise rotation
+                values[iV] = torch.rot90(values[iV], n_rotations, [2, 3])
+
+        # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_orient_image_snapshot_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_orient_annot_snapshot_image.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -123,15 +160,15 @@ class RandomOrientation(object):
 
 
 class LocalDeform(object):
-    """Locally deforms a 2D numpy array based on
-    a randomly generated sparse vector array
+    """Locally deforms input based on a randomly 
+    generated sparse vector array
     """
 
     def __init__(self, size, ampl):
         """ Args:
-            size (int/tuple): number of deforming \
-                vectors along each axis
-            ampl (int): maximum vector magnitude
+            size (int/tuple): number of deforming vectors 
+                along each axis
+            ampl (int): maximum vector magnitude in pixels
         """    
 
         assert isinstance(size, (int, tuple))
@@ -146,10 +183,12 @@ class LocalDeform(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:np.array dict): input images
+            sample (string:(HxW np.array or BxCxHxW tensor) 
+                dict): input images
                     
         Returns:
-            (string:np.array dict): output images
+            (string:(HxW np.array or BxCxHxW tensor) dict): 
+                output images
         """   
 
         # Get input dictionary values
@@ -161,90 +200,103 @@ class LocalDeform(object):
         # Get input shape
         shape = values[0].shape
 
-        # Initialize random sparse vector field
-        dS = [
-            np.random.uniform(-self.ampl, self.ampl, size=self.size) 
-            for iS in range(2)
-        ]
+        if isinstance(values[0], np.ndarray) and len(shape) == 2:
 
-        # Zero out edges
-        for iS in range(2):
-            for n in [0, -1]:
-                dS[iS][n, :] = 0
-                dS[iS][:, n] = 0
+            # Initialize random sparse vector field
+            dS = [
+                np.random.uniform(-self.ampl, self.ampl, size=self.size) 
+                for iS in range(2)
+            ]
 
-        # Resize vector field to pixel resolution
-        dS = [
-            cv2.resize(dS[iS], (shape[0], shape[1])) 
-            for iS in range(2)
-        ]       
+            # Zero out edges
+            for iS in range(2):
+                for n in [0, -1]:
+                    dS[iS][n, :] = 0
+                    dS[iS][:, n] = 0
+
+            # Resize vector field to pixel resolution
+            dS = [
+                cv2.resize(dS[iS], (shape[0], shape[1])) 
+                for iS in range(2)
+            ]       
+            
+            # Determine axis-wise pixel transformations
+            X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]))
+            indices = np.reshape(Y+dS[1], (-1, 1)), np.reshape(X+dS[0], (-1, 1))
+
+            # Deform
+            values = [
+                map_coordinates(values[iV], indices, order=1).reshape(shape) 
+                for iV in range(len(values))
+            ]
+
+        elif torch.is_tensor(values[0]) and len(shape) == 4:
+            
+            # Get current GPU device
+            current_device = f'cuda:{values[0].get_device()}'
+            
+            # Initialize random sparse vector field
+            dS = [
+                torch.FloatTensor(
+                    shape[0], 
+                    1, 
+                    self.size[0] - 2, 
+                    self.size[1] - 2
+                ).uniform_(-self.ampl, self.ampl).to(device=current_device, dtype=torch.float)
+                for iS in range(2)
+            ]
+
+            # Pad the edges with zeros
+            dS = [
+                tfunc.pad(dS[iS], (1, 1, 1, 1), "constant", 0)
+                for iS in range(2)
+            ]
+ 
+            # Resize vector field to pixel resolution
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                dS = [
+                    tfunc.interpolate(
+                        dS[iS], 
+                        scale_factor=(shape[2]/self.size[0], shape[3]/self.size[1]), 
+                        align_corners=True, 
+                        mode='bilinear'
+                    )
+                    for iS in range(2)
+                ]       
         
-        # Determine axis-wise pixel transformations
-        X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]))
-        indices = np.reshape(Y+dS[1], (-1, 1)), np.reshape(X+dS[0], (-1, 1))
+            # Determine axis-wise pixel transformations
+            X, Y = torch.meshgrid(torch.arange(shape[2]).to(device=current_device, dtype=torch.float), torch.arange(shape[3]).to(device=current_device, dtype=torch.float), indexing='xy')
+            X = X.unsqueeze(0).repeat(shape[0], 1, 1).unsqueeze(1)
+            Y = Y.unsqueeze(0).repeat(shape[0], 1, 1).unsqueeze(1)
+            indices = torch.reshape(Y+dS[1], (-1, 1)), torch.reshape(X+dS[0], (-1, 1))
+            indices = torch.cat((indices[0], indices[1]), dim=1)
+            indices = torch.transpose(indices, 0, 1)
 
-        # Deform
-        values = [
-            map_coordinates(values[iV], indices, order=1).reshape(shape) 
-            for iV in range(len(values))
-        ]
+            # Create batch and channel indices
+            chan_ind = torch.zeros(
+                shape[0] * shape[2] * shape[3] 
+            ).to(device=current_device, dtype=torch.long)
+            batch_ind = torch.arange(
+                0, 
+                shape[0]
+            ).repeat_interleave(shape[2] * shape[3]).long().to(device=current_device, dtype=torch.long)
 
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-
-
-class Padding(object):
-    """Pads a numpy array or list of numpy arrays 
-    with reflected values
-    """
-
-    def __init__(self, width):
-        """ Args:
-            width (int): Padding width
-        """ 
-
-        assert isinstance(width, int)
-        if isinstance(width, int):
-            self.width = width
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:[np.array] dict): input images
-                    
-        Returns:
-            (string:[np.array] dict): output images
-        """   
-
-        # Get input dictionary values
-        values = [
-            value 
-            for value in sample.values()
-        ]
-
-        # Pad
-        if isinstance(values[0], list):
+            # Deform
             values = [
-                [
-                    np.pad(
-                        values[iV][iC], 
-                        (
-                            (0, 0), 
-                            (self.width, self.width), 
-                            (self.width, self.width)
-                        ), 
-                        mode='reflect'
-                    ) 
-                    for iC in range(len(values[0]))
-                ]
+                map_tensor_coordinates(values[iV], indices, chan_ind, batch_ind).reshape(shape) 
                 for iV in range(len(values))
             ]
-        else:
-            values = [
-                np.pad(values[iV], self.width, mode='reflect') 
-                for iV in range(len(values))
-            ]
+
+        # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_deform_image_snapshot_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_deform_annot_snapshot_image.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -275,14 +327,14 @@ class ToUnitInterval(object):
         if isinstance(values[0], list):
             values = [
                 [
-                    values[iV][iC].astype(float) / 255
+                    values[iV][iC].astype('float32') / 255
                     for iC in range(len(values[0]))
                 ]
                 for iV in range(len(values))
             ]
         else:
             values = [
-               values[iV].astype(float) / 255 
+               values[iV].astype('float32') / 255 
                for iV in range(len(values))
             ]
 
@@ -336,12 +388,38 @@ class ToBinary(object):
                 if iV in self.items
             ]            
         else:
-            values = [
-                np.where(values[iV] > self.cutoff, 1, 0).astype('uint8')
-                if iV in self.items
-                else values[iV]
-                for iV in range(len(values))
-            ]
+            if len(values[0].shape) == 2:
+                values = [
+                    np.where(values[iV] > self.cutoff, 1, 0).astype('uint8')
+                    if iV in self.items
+                    else values[iV]
+                    for iV in range(len(values))
+                ]
+            elif len(values[0].shape) == 4:
+                
+                # Get current GPU device
+                current_device = f'cuda:{values[0].get_device()}'
+                one = torch.ones(1).to(device=current_device, dtype=torch.uint8)
+                zero = torch.zeros(1).to(device=current_device, dtype=torch.uint8)
+                values = [
+                    torch.where(
+                        values[iV] > self.cutoff, 
+                        one, 
+                        zero
+                    )
+                    if iV in self.items
+                    else values[iV]
+                    for iV in range(len(values))
+                ]
+
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_binary_image_snapshot_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_binary_annot_snapshot_image.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -360,9 +438,10 @@ class Noise(object):
                 noise
             items (list): list of sample value numbers 
                 to convert to binary
-        """  
+        """ 
 
-        assert isinstance(std, float) and std > 0
+        assert isinstance(std, float) and std >= 0 \
+            or isinstance(std, int) and std == 0
         self.std = std
 
         assert isinstance(items, list)
@@ -383,17 +462,33 @@ class Noise(object):
         ]
 
         # Add noise and clip at unit interval
-        values = [
-            np.clip(
-                values[0] + np.random.normal(
-                    scale=self.std, 
-                    size=values[0].shape
-                ), 0, 1
-            ) 
-            if iV in self.items
-            else values[iV]
-            for iV in range(len(values))
-        ]
+        for iV in range(len(values)):
+            if iV in self.items:
+                if len(values[iV].shape) == 2:
+                    values[iV] = np.clip(
+                        values[iV] + np.random.normal(
+                            scale=self.std, 
+                            size=values[0].shape
+                        ), 0, 1
+                    ) 
+                elif len(values[iV].shape) == 4:
+                    current_device = f'cuda:{values[iV].get_device()}'
+                    noise = torch.normal(
+                        mean=0,
+                        std=self.std, 
+                        size=values[iV].shape
+                    ).to(device=current_device, dtype=torch.float)
+                    values[iV] = values[iV] + noise
+                    values[iV] = torch.clip(values[iV], 0, 1) 
+
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_noise_image_snapshot_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_noise_annot_snapshot_image.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -436,6 +531,15 @@ class ToTensor(object):
                 ]
                 for iV in range(len(values))
             ]
+        elif len(values[0].shape) > 2:
+            values = [
+                np.expand_dims(values[iV], axis=1) 
+                for iV in range(len(values))
+            ]
+            values = [
+                torch.from_numpy(values[iV]) 
+                for iV in range(len(values))
+            ]
         else:
             values = [
                 np.expand_dims(values[iV], axis=0) 
@@ -452,6 +556,74 @@ class ToTensor(object):
         }
 
 
+class ToNormal(object):
+    """Crops a numpy array regularly to get a list of crops
+    comprising the entire array
+    """
+
+    def __init__(self, items, new_mean, new_std):
+        """ Args:
+            input_size (int/tuple): input image sizes
+            output_size (int/tuple): output image size
+        """    
+
+        assert isinstance(items, list)
+        self.items = items
+
+        assert isinstance(new_std, float)
+        assert new_std > 0 and new_std < 1
+        self.new_std = new_std
+        
+        assert isinstance(new_mean, float)
+        assert new_mean > 0 and new_mean < 1
+        self.new_mean = new_mean
+
+    def __call__(self, sample):
+        """ Args:
+            sample (string:np.array dict): input images
+                    
+        Returns:
+            (string:[np.arrays] dict): output images
+        """   
+
+        # Get input dictionary values        
+        values = [
+            value 
+            for value in sample.values()
+        ]
+        
+        old_mean = torch.mean(values[0])
+        old_std = torch.std(values[0])
+
+        # Transform to new normal distribution
+        values = [
+            ((values[iV] - old_mean) / old_std) * self.new_std + self.new_mean
+            if iV in self.items
+            else values[iV]
+            for iV in range(len(values)) 
+        ] 
+
+        # Clip
+        values = [
+            torch.clip(values[iV], 0, 1)
+            for iV in range(len(values)) 
+        ] 
+
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_normal_image_snapshot_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_normal_annot_snapshot_image.png'
+        # )
+         
+        return {
+            list(sample.keys())[iV]: values[iV] 
+            for iV in range(len(values))
+        }
+        
+        
 class FullCrop(object):
     """Crops a numpy array regularly to get a list of crops
     comprising the entire array
@@ -510,12 +682,22 @@ class FullCrop(object):
         # Crop
         cropped_samples = [[] for value in values]
         for iV in range(len(values)):
-            for top in tops:
-                for left in lefts:
-                    cropped_samples[iV].append(values[iV][
-                        top: top + self.output_size[0],
-                        left: left + self.output_size[1]
-                    ])
+            if len(values[iV].shape) == 2:
+                for top in tops:
+                    for left in lefts:
+                        cropped_samples[iV].append(values[iV][
+                            top: top + self.output_size[0],
+                            left: left + self.output_size[1]
+                        ])
+            elif len(values[iV].shape) == 4:
+                for top in tops:
+                    for left in lefts:
+                        cropped_samples[iV].append(values[iV][
+                            :,
+                            :,
+                            top: top + self.output_size[0],
+                            left: left + self.output_size[1]
+                        ])
 
         return {
             list(sample.keys())[iV]: cropped_samples[iV] 
@@ -542,22 +724,36 @@ class StackOrient(object):
             value 
             for value in sample.values()
         ]
-        
+
         # Stack and orient 
         for iV in range(len(values)):
             for iC in range(len(values[0])):
+                if len(values[iV][iC].shape) == 4:
+                    values[iV][iC] = torch.cat((
+                        values[iV][iC],
+                        torch.flip(values[iV][iC], [2]),
+                        torch.flip(values[iV][iC], [3]),
+                        torch.flip(values[iV][iC], [2, 3])
+                    ), dim=1)
 
-                mirrored_stack = np.stack((
-                    values[iV][iC],
-                    np.flip(values[iV][iC], 0),
-                    np.flip(values[iV][iC], 1),
-                    np.flip(values[iV][iC], (0, 1))
-                ), axis = 0)
-                
-                values[iV][iC] = np.concatenate((
-                    mirrored_stack,
-                    np.rot90(mirrored_stack, axes=(1, 2))
-                ))
+                    values[iV][iC] = torch.cat((
+                        values[iV][iC],
+                        torch.rot90(values[iV][iC], 1, [2, 3])
+                    ), dim=1)
+
+                elif len(values[iV][iC].shape) == 2:
+
+                    mirrored_stack = np.stack((
+                        values[iV][iC],
+                        np.flip(values[iV][iC], 0),
+                        np.flip(values[iV][iC], 1),
+                        np.flip(values[iV][iC], (0, 1))
+                    ), axis=0)
+                    
+                    values[iV][iC] = np.concatenate((
+                        mirrored_stack,
+                        np.rot90(mirrored_stack, axes=(1, 2))
+                    ))
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -725,25 +921,42 @@ class StackReorient(object):
             value 
             for value in sample.values()
         ]
-        
+
         # Reorient all stack layers
         for iV in range(len(values)):
             for iC in range(len(values[0])):
-                values[iV][iC][4:, :, :] = np.rot90(
-                    values[iV][iC][4:, :, :], 
-                    3, 
-                    axes=(1, 2)
-                )
-                values[iV][iC] = np.stack((
-                    values[iV][iC][0, :, :],
-                    np.flip(values[iV][iC][1, :, :], 0),
-                    np.flip(values[iV][iC][2, :, :], 1),
-                    np.flip(values[iV][iC][3, :, :], (0, 1)),
-                    values[iV][iC][4, :, :],
-                    np.flip(values[iV][iC][5, :, :], 0),
-                    np.flip(values[iV][iC][6, :, :], 1),
-                    np.flip(values[iV][iC][7, :, :], (0, 1))
-                ), axis = 0)
+                if len(values[iV][iC].shape) == 4:
+                    values[iV][iC][:, 4:, :, :] = torch.rot90(
+                        values[iV][iC][:, 4:, :, :], 
+                        3, 
+                        [2, 3]
+                    )
+                    values[iV][iC] = torch.cat((
+                        values[iV][iC][:, 0, :, :],
+                        torch.flip(values[iV][iC][:, 1, :, :], [2]),
+                        torch.flip(values[iV][iC][:, 2, :, :], [3]),
+                        torch.flip(values[iV][iC][:, 3, :, :], [2, 3]),
+                        values[iV][iC][:, 4, :, :],
+                        torch.flip(values[iV][iC][:, 5, :, :], [2]),
+                        torch.flip(values[iV][iC][:, 6, :, :], [3]),
+                        torch.flip(values[iV][iC][:, 7, :, :], [2, 3])
+                    ), dim=1)
+                else:
+                    values[iV][iC][4:, :, :] = np.rot90(
+                        values[iV][iC][4:, :, :], 
+                        3, 
+                        axes=(1, 2)
+                    )
+                    values[iV][iC] = np.stack((
+                        values[iV][iC][0, :, :],
+                        np.flip(values[iV][iC][1, :, :], 0),
+                        np.flip(values[iV][iC][2, :, :], 1),
+                        np.flip(values[iV][iC][3, :, :], (0, 1)),
+                        values[iV][iC][4, :, :],
+                        np.flip(values[iV][iC][5, :, :], 0),
+                        np.flip(values[iV][iC][6, :, :], 1),
+                        np.flip(values[iV][iC][7, :, :], (0, 1))
+                    ), axis=0)
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -772,8 +985,10 @@ class StackMean(object):
         
         # Average
         values = [
-            [
-                np.mean(values[iV][iC], axis=0)
+            [   
+                torch.mean(values[iV][iC], dim=1)
+                if len(values[iV][iC].shape) == 4
+                else np.mean(values[iV][iC], axis=0)
                 for iC in range(len(values[0]))
             ]
             for iV in range(len(values))

@@ -6,10 +6,11 @@ import torchvision.utils        as v_utils
 import torchvision.transforms   as transforms
 from torch.autograd             import Variable
 from FusionNet                  import * 
-from datasets                   import LIVECell
+from datasets                   import LIVECell_trial
 from image_transforms           import RandomCrop
 from image_transforms           import RandomOrientation
-from image_transforms           import Padding
+from image_transforms           import ToNormal
+from image_transforms           import Noise
 from image_transforms           import ToUnitInterval
 from image_transforms           import ToTensor
 from utils                      import path_gen
@@ -21,21 +22,26 @@ from inspect                    import getargspec
 def test(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
-    data_subset = 'test',
+    data_subset = 'val_2',
     model_data_set = 'LIVECell',
-    model_data_subset = 'train',
+    model_data_subset = 'trial',
     print_separator = '$',
-    gpu_device_ids = getAvailable(
-        limit=100,
-        maxLoad=0.1,
-        maxMemory=0.1
-    ),
-    model = '2',
-    load_snapshot = 150,
-    batch_size = 'max',
+    gpu_device_ids = 'all_available',
+    model = 'ReLuX_128_deform',
+    load_snapshot = 1500,
+    new_mean = .5,
+    new_std = .15,
+    pred_size = 128,
+    orig_size = (520, 704),
+    localdeform = [8, 8],
+    tobinary = .9,
+    noise = .05,
+    batch_size = 128,
     pin_memory = True, 
+    prefetch_factor = 2,
     persistent_workers = True,
-    save_images = 1
+    save_images = 5,
+    reserved_gpus = [6, 7]
 ):  
     """Tests a FusionNet-type neural network quickly,
         without boosting or full deployment, just to 
@@ -62,7 +68,7 @@ def test(
         model_data_set (string): trained model data set 
         model_data_subset (string): trained model data subset 
         print_separator (string): print output separation
-            character (default = '$')
+            character
         gpu_device_ids (list of ints): gpu device ids used
             (default = <all available GPUs>)
         model (string): current model identifier
@@ -71,13 +77,13 @@ def test(
         batch_size (int): data batch size (default = <maximum>)
         pin_memory (bool): tensors fetched by DataLoader pinned 
             in memory, enabling faster data transfer to 
-            CUDA-enabled GPUs.(default = True)
+            CUDA-enabled GPUs.
         persistent_workers (bool): worker processes will not be 
             shut down after a dataset has been consumed once, 
             allowing the workers Dataset instances to remain 
-            alive. (default = True)
+            alive.
         save_images (int): amount of test output images to save
-            (default = 1; max = batch_size)
+            (max = batch_size)
         
     Returns:
         A log of all testing set batch losses in the results 
@@ -92,31 +98,7 @@ def test(
     
     # Being beautiful is not a crime
     print('\n', f'{print_separator}' * 87, '\n', sep='')
-
-    # Assign devices if CUDA is available
-    if torch.cuda.is_available(): 
-        device = f'cuda:{gpu_device_ids[0]}' 
-        print(f'\tUsing GPU {gpu_device_ids[0]} as handler for GPUs {gpu_device_ids}...')
-    else: 
-        raise RuntimeError('\n\tAt least one GPU must be available to test FusionNet')
-
-    # Clip batch size if necessary
-    if batch_size == 'max' or batch_size > 2 * len(gpu_device_ids):
-        batch_size = 2 * len(gpu_device_ids)
-        print(f'\tBatch size has been set to {batch_size}...')
     
-    # Clip amount of images to be saved if necessary
-    if save_images > batch_size:
-        save_images = batch_size
-        print(f'\tAmount of images to be saved has been set to {save_images}...')
-
-    # Indicate how output will be saved
-    print(f'\tAfter completion, {save_images} example outputs will be saved in path/results...')
-    print('\n\t', f'{print_separator}' * 71, '\n', sep='')
-    
-    # Set number of workers equal to number of GPUs available
-    num_workers = len(gpu_device_ids)
-
     # Generate folder path strings
     models_folder = path_gen([
         path,
@@ -140,20 +122,63 @@ def test(
     if not os.path.isdir(results_folder):
         os.makedirs(results_folder)
 
+    # Save testing parameters
+    testing_variable_names = getargspec(test)[0]
+    testing_parameters = getargspec(test)[3] 
+    with open(f'{models_folder}FusionNet_testing_parameters.txt', 'a') as outfile:
+        for iVn, iP in zip(testing_variable_names, testing_parameters):
+            args = f'{iVn},{iP}\n'
+            outfile.write(args)
+    
+    # Get available GPUs
+    if gpu_device_ids == 'all_available':
+        gpu_device_ids = getAvailable(
+            limit=100, 
+            maxLoad=0.05, 
+            maxMemory=0.05
+        )
+
+    # Remove reserved GPUs
+    gpu_device_ids = [
+        gpu 
+        for gpu in gpu_device_ids 
+        if gpu not in reserved_gpus
+    ]
+
+    # Assign devices if CUDA is available
+    if torch.cuda.is_available(): 
+        dataset_device = f'cuda:{gpu_device_ids[-1]}' 
+        nn_handler_device = f'cuda:{gpu_device_ids[0]}' 
+        print(f'\tUsing GPU {gpu_device_ids[-1]} as online dataset storage...')
+        print(f'\tUsing GPU {gpu_device_ids[0]} as handler for GPUs {gpu_device_ids}...')
+    else: 
+        raise RuntimeError('\n\tAt least one GPU must be available to train FusionNet')
+
+    # Indicate how output will be saved
+    print(f'\tAfter completion, {save_images} example outputs will be saved in path/results...')
+    print('\n\t', f'{print_separator}' * 71, '\n', sep='')
+    
+    # Set number of workers equal to number of GPUs used
+    num_workers = len(gpu_device_ids)
+
     # Disable gradient calculation
     with torch.no_grad():
 
         # Initiate custom DataSet() instance
-        LIVECell_test_dset = LIVECell(
+        LIVECell_test_dset = LIVECell_trial(
             path=path,
             data_set=data_set,
             data_subset=data_subset,
-            transform=transforms.Compose([
-                RandomCrop(input_size=(520,704), output_size=512),
-                RandomOrientation(),
-                Padding(width=64),
+            dataset_device=dataset_device,
+            offline_transform=transforms.Compose([
                 ToUnitInterval(),
-                ToTensor()
+                ToTensor(),
+                ToNormal(items=[0], new_mean=new_mean, new_std=new_std)
+            ]),
+            online_epoch_pretransform=transforms.Compose([
+                RandomCrop(input_size=orig_size, output_size=pred_size),
+                RandomOrientation(),
+                #Noise(std=noise, items=[0]),
             ])
         )
 
@@ -164,45 +189,56 @@ def test(
             shuffle=True, 
             num_workers=num_workers,
             pin_memory=pin_memory,
-            persistent_workers=persistent_workers
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor
         )
-
-        # Initiate FusionNet
-        FusionNet = nn.DataParallel(
-            FusionGenerator(1,1,64), 
-            device_ids=gpu_device_ids
-        ).to(device=device, dtype=torch.float)
-
-        # Load trained network
-        model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.pkl'
-        FusionNet.load_state_dict(torch.load(model_path))        
-        print(f'\tTesting with snapshot of epoch {load_snapshot} of model {model} trained on {model_data_set}/{model_data_subset}...')
-        print(f'\tUsing network to test on images from {data_set}/{data_subset}...')   
-        print('\n\t', f'{print_separator}' * 71, '\n', sep='')
 
         # Define loss function
         loss_func = nn.SmoothL1Loss()
-        
-        # Test FusionNet
+
+        # Initiate FusionNet
+        FusionNet = FusionGenerator(1,1,64).to(device=nn_handler_device, dtype=torch.float)
+
+        # Load trained network
+        model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.tar'
+        checkpoint = torch.load(model_path)
+        FusionNet.load_state_dict(checkpoint['model_module_state_dict'])
+        print(f'\tTesting with snapshot of epoch {load_snapshot} of model {model} trained on {model_data_set}/{model_data_subset}...')
+        print(f'\tUsing network to test on images from {data_set}/{data_subset}...')   
+        print('\n\t', f'{print_separator}' * 71, '\n', sep='')
+       
+        # Wrap model for parallel GPU usage
+        FusionNet = nn.DataParallel(
+            FusionNet, 
+            device_ids=gpu_device_ids
+        )
+
+        # Make sure evaluation mode is enabled
+        FusionNet.eval()
+
+        # Initialize loss log
         batch_loss_log = []
-        for iter, batch in enumerate(dataloader):
-            
-            # Wrap the batch and pass it forward
-            x = Variable(batch['image']).to(device=device, dtype=torch.float)
-            y_ = Variable(batch['annot']).to(device=device, dtype=torch.float)
-            y = FusionNet(x)
         
-            # Calculate the loss 
+        # Perform online epoch image transformations
+        LIVECell_trial.epoch_transform(LIVECell_test_dset)
+
+        # Test FusionNet
+        for iB, batch in enumerate(dataloader):
+            
+            # Wrap the batch, pass it forward and calculate loss
+            x = Variable(batch['image']).to(device=nn_handler_device, dtype=torch.float)
+            y_ = Variable(batch['annot']).to(device=nn_handler_device, dtype=torch.float)
+            y = FusionNet(x)
             loss = loss_func(y, y_)
-                
+
             # Record individual batch losses
             batch_loss_log.append(loss.item())
 
             # Display progress
-            batch_ratio = (iter) / (len(dataloader) - 1)
+            batch_ratio = (iB) / (len(dataloader) - 1)
             sys.stdout.write('\r')
             sys.stdout.write(
-                "\tBatches: [{:<{}}] {:.0f}%; Loss: {:.5f}".format(
+                "\Images: [{:<{}}] {:.0f}%; Loss: {:.5f}".format(
                     "=" * int(20*batch_ratio), 20, 100*batch_ratio,
                     loss.item()
                 )
@@ -213,34 +249,34 @@ def test(
         print(f'\n\tAverage testing loss: {mean(batch_loss_log)}')
 
         # Loss log output
-        with open(f'{results_folder}FusionNet_test_loss.txt', 'w') as outfile:
+        with open(f'{results_folder}FusionNet_test_loss_fromsnapshot{load_snapshot}.txt', 'w') as outfile:
             for batch_loss in batch_loss_log:
                 args = f'{batch_loss}\n'
                 outfile.write(args)
         
         # Optional example network image outputs
         if save_images:
-            for image in range(save_images):
+            
+            # Clip amount of images to be saved if necessary
+            last_batch_size = list(batch.values())[0].shape[0]
+            if save_images > last_batch_size:
+                save_images = last_batch_size
+                print(f'\tAmount of images to be saved has been reset to maximum {save_images}...')
+
+            for iI in torch.randperm(save_images):
+                iI = iI.item()
                 v_utils.save_image(
-                    x[image].detach().to('cpu').type(torch.float32), 
-                    f'{results_folder}FusionNet_image_snapshot{load_snapshot}_image{image}.png'
+                    x[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
+                    f'{results_folder}FusionNet_image_snapshot{load_snapshot}_image{iI}.png'
                 )
                 v_utils.save_image(
-                    y_[image].detach().to('cpu').type(torch.float32), 
-                    f'{results_folder}FusionNet_annot_snapshot{load_snapshot}_image{image}.png'
+                    y_[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
+                    f'{results_folder}FusionNet_annot_snapshot{load_snapshot}_image{iI}.png'
                 )
                 v_utils.save_image(
-                    y[image].detach().to('cpu').type(torch.float32), 
-                    f'{results_folder}FusionNet_pred_snapshot{load_snapshot}_image{image}.png'
+                    y[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
+                    f'{results_folder}FusionNet_pred_snapshot{load_snapshot}_image{iI}.png'
                 )
-    
-    # Save testing parameters
-    testing_variable_names = getargspec(test)[0]
-    testing_parameters = getargspec(test)[3] 
-    with open(f'{results_folder}FusionNet_testing_parameters{load_snapshot}.txt', 'w') as outfile:
-        for iVn, iP in zip(testing_variable_names, testing_parameters):
-            args = f'{iVn},{iP}\n'
-            outfile.write(args)    
 
 
 # If test.py is run directly
@@ -251,4 +287,4 @@ if __name__ == '__main__':
 
     # Run test()
     test()
-    print('\n', end='')
+    print('\n\n', end='')

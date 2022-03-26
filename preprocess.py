@@ -5,6 +5,7 @@ from PIL            import Image
 from pycocotools    import coco
 from utils          import HiddenPrints
 from utils          import path_gen
+from eval           import binary2json
 
 
 def stack_tifs(dir):
@@ -312,7 +313,7 @@ def stack_orient(dir, square=False):
 def preprocess(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
-    data_subset = 'trial',
+    data_subset = 'extra',
     orient = False
 ):
     """Preprocesses LIVECell image and annotation data
@@ -353,13 +354,13 @@ def preprocess(
     print('\nChecking for image data... ')
 
     # Generate folder path string
-    img_folder = path_gen(
+    img_folder = path_gen([
         path,
         'data',
         data_set,
         'images',
         data_subset
-    )
+    ])
 
     # Check if image folder exists and has images
     img_folder_exists = os.path.isdir(img_folder)
@@ -427,13 +428,13 @@ def preprocess(
     ######################## Annotation data #########################
 
     # Generate folder path string
-    ann_folder = path_gen(
+    ann_folder = path_gen([
         path,
         'data',
         data_set,
         'annotations',
         data_subset
-    )
+    ])
 
     # Check if annotation folder exists and has images
     ann_folder_exists = os.path.isdir(ann_folder)
@@ -463,6 +464,9 @@ def preprocess(
     ann_var_or_fnames_exists = os.path.isfile(
         f'{ann_folder}variables/oriented_filenames.txt'
     )
+    ann_var_json_exists = os.path.isfile(
+        f'{ann_folder}variables/json.json'
+    )
 
     # Display whether all variables are missing
     if not ann_var_folder_exists:
@@ -485,7 +489,7 @@ def preprocess(
                 'Checking for .json file... ', end=''
             )
             json_file_exists = os.path.isfile(
-                f'{path}annotations/{data_subset}.json'
+                f'{path}/annotations/{data_subset}.json'
             )
             if json_file_exists:
                 print(
@@ -494,7 +498,7 @@ def preprocess(
                 )      
                 with HiddenPrints():
                     json2array(
-                        f'{path}annotations/{data_subset}.json', 
+                        f'{path}/annotations/{data_subset}.json', 
                         create_tifs=True
                     )
             else:
@@ -515,10 +519,19 @@ def preprocess(
                     'Creating now...'
                 )
                 stack_orient(ann_folder)
+        
+        if not ann_var_json_exists:
+            print('\tMissing .json file. Creating now...')
+            binary2json(
+                path = path,
+                data_set = data_set,
+                data_subset = data_subset,
+                mode = 'prep'
+            )
 
-# If train.py is run directly
+
+# If preprocess.py is run directly
 if __name__ == '__main__':
 
-    # Run train()
+    # Run preprocess()
     preprocess()
-    print('\n', end='')
