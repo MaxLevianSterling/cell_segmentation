@@ -33,12 +33,12 @@ def train(
     print_separator = '$',
     gpu_device_ids = 'all_available',
     model = 'ReLuX_64_deform',
-    load_snapshot = 0,
+    load_snapshot = 250,
     pred_size = 64,
     orig_size = (520, 704),
     new_mean = .5,
     new_std = .15,
-    localdeform = [6, 6],
+    localdeform = [6, 4],
     tobinary = .9,
     noise = .05,
     batch_size = 128,
@@ -50,8 +50,8 @@ def train(
     lr = .0002,
     weight_decay = .001,
     gamma = 0.99993068768,
-    n_epochs = 500,
-    save_snapshot_interval = 500,
+    n_epochs = 250,
+    save_snapshot_interval = 250,
     save_image_interval = 50,
     amp = False,
     reserved_gpus = []
@@ -226,13 +226,16 @@ def train(
     # Define loss function 
     loss_func = nn.SmoothL1Loss()
 
+    # # Initiate FusionNet
+    # FusionNet = nn.DataParallel(
+    #     FusionGenerator(1,1,64).to(device=nn_handler_device), 
+    #     device_ids=gpu_device_ids,
+    #     output_device=nn_handler_device
+    # )
+
     # Initiate FusionNet
-    FusionNet = nn.DataParallel(
-        FusionGenerator(1,1,64).to(device=nn_handler_device), 
-        device_ids=gpu_device_ids,
-        output_device=nn_handler_device
-    )
-    
+    FusionNet = FusionGenerator(1,1,64).to(device=nn_handler_device) 
+        
     # for name, param in FusionNet.named_parameters():
     #     if param.requires_grad:
     #         print(name, param.data)
@@ -241,7 +244,7 @@ def train(
     if load_snapshot:
         model_path = f'{models_folder}FusionNet_snapshot{load_snapshot}.tar'
         checkpoint = torch.load(model_path, map_location=nn_handler_device)
-        check = FusionNet.module.load_state_dict(checkpoint['model_module_state_dict'])
+        check = FusionNet.load_state_dict(checkpoint['model_module_state_dict'])
     
     # for name, param in FusionNet.named_parameters():
     #     if param.requires_grad:
@@ -343,7 +346,7 @@ def train(
 
             # Display progress
             epoch_ratio = (iE) / (n_epochs - 1)
-            batch_ratio = (iB) / (len(dataloader) - 1)
+            batch_ratio = (iB + 1) / (len(dataloader))
             sys.stdout.write('\r')
             sys.stdout.write(
                 "\tEpochs: [{:<{}}] {:.0f}%; Batches: [{:<{}}] {:.0f}%; Loss: {:.5f}".format(
@@ -354,7 +357,7 @@ def train(
             )
             sys.stdout.flush()
         
-        # Update lr via scheduler
+        # Update learning rate via scheduler
         scheduler.step()
 
         # Note the average loss of the epoch
@@ -365,7 +368,7 @@ def train(
 
             # Save FusionNet checkpoint
             torch.save({
-                'model_module_state_dict': FusionNet.module.state_dict(),
+                'model_module_state_dict': FusionNet.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict()
             }, f'{models_folder}FusionNet_snapshot{load_snapshot+iE+1}.tar')

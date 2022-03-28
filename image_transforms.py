@@ -51,18 +51,14 @@ class RandomCrop(object):
         ]    
         
         # Randomly find cropping position
-        if self.input_size[0] - self.output_size[0] > -1:
-            top = np.random.randint(
-                0, 
-                self.input_size[0] + 1 - self.output_size[0]
-            )
-        else: top = 0
-        if self.input_size[1] - self.output_size[1] > -1:
-            left = np.random.randint(
-                0, 
-                self.input_size[1] + 1 - self.output_size[1]
-            )
-        else: left = 0
+        top = torch.randint(
+            self.input_size[0] + 1 - self.output_size[0],
+            (1,)
+        )
+        left = torch.randint(
+            self.input_size[1] + 1 - self.output_size[1],
+            (1,)
+        )
 
         # Crop
         for iV in range(len(values)):
@@ -117,8 +113,8 @@ class RandomOrientation(object):
         ]
             
         # Randomly select orientation
-        mirror = np.random.randint(1, 5)
-        n_rotations = np.random.randint(0, 4)   
+        mirror = torch.randint(low=1, high=5, size=(1,))
+        n_rotations = torch.randint(low=0, high=4, size=(1,))   
 
         for iV in range(len(values)):
             if isinstance(values[iV], np.ndarray) and len(values[iV].shape) == 2:
@@ -141,7 +137,7 @@ class RandomOrientation(object):
                 values[iV] = torch.flip(values[iV], [3]) if mirror % 2 == 0 else values[iV]
 
                 # Counterclockwise rotation
-                values[iV] = torch.rot90(values[iV], n_rotations, [2, 3])
+                values[iV] = torch.rot90(values[iV], n_rotations.item(), [2, 3])
 
         # Plotting utility
         # v_utils.save_image(
@@ -412,6 +408,7 @@ class ToBinary(object):
                     for iV in range(len(values))
                 ]
 
+        # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_binary_image_snapshot_image.png'
@@ -481,6 +478,7 @@ class Noise(object):
                     values[iV] = values[iV] + noise
                     values[iV] = torch.clip(values[iV], 0, 1) 
 
+        # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_noise_image_snapshot_image.png'
@@ -609,6 +607,7 @@ class ToNormal(object):
             for iV in range(len(values)) 
         ] 
 
+        # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_normal_image_snapshot_image.png'

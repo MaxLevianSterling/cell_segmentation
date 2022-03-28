@@ -26,26 +26,22 @@ from inspect                    import getargspec
 from math                       import ceil
 
 
-# def worker_init_fn(worker_id):                                                          
-#     np.random.seed(np.random.get_state()[1][0] + worker_id)
-
-
 def train(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
     data_subset = 'trial',
     print_separator = '$',
     gpu_device_ids = 'all_available',
-    model = 'ReLu_128_hope',
+    model = 'ReLu_64_yes_batchnorm_yes_tanh_kaiming_init_no_parallel',
     load_checkpoint = 0,
-    pred_size = 128,
+    pred_size = 64,
     orig_size = (520, 704),
     new_mean = .5,
     new_std = .15,
     localdeform = [6, 4],
     tobinary = .9,
     noise = .05,
-    batch_size = 128,
+    batch_size = 100,
     num_workers = 'ratio',
     pin_memory = True,
     persistent_workers = True,
@@ -54,9 +50,9 @@ def train(
     lr = .0002,
     weight_decay = .001,
     gamma = 0.99993068768,
-    n_epochs = 1000,
-    save_checkpoint_interval = 500,
-    save_image_interval = 100,
+    n_epochs = 2,
+    save_checkpoint_interval = 1,
+    save_image_interval = 1,
     amp = False,
     reserved_gpus = [0, 1, 6, 7]
 ):
@@ -198,11 +194,11 @@ def train(
         ]),
         epoch_pretransforms=transforms.Compose([
             RandomCrop(input_size=orig_size, output_size=pred_size),
-            RandomOrientation(),
-            LocalDeform(size=localdeform[0], ampl=localdeform[1]),
-            ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
-            ToBinary(cutoff=tobinary, items=[1]),
-            Noise(std=noise, items=[0]),
+            #RandomOrientation(),
+            #LocalDeform(size=localdeform[0], ampl=localdeform[1]),
+            #ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
+            #ToBinary(cutoff=tobinary, items=[1]),
+            #Noise(std=noise, items=[0]),
         ])
     )
 
@@ -224,21 +220,20 @@ def train(
         pin_memory=pin_memory,
         persistent_workers=persistent_workers,
         prefetch_factor=prefetch_factor,
-        drop_last=drop_last,
-        #worker_init_fn=worker_init_fn
+        drop_last=drop_last
     )
 
     # Define loss function 
-    loss_func = nn.SmoothL1Loss()
+    # loss_func = nn.SmoothL1Loss()
     # loss_func = nn.MSELoss()
-    # loss_func = nn.L1Loss()
+    loss_func = nn.L1Loss()
 
-    # Initiate FusionNet
-    FusionNet = nn.DataParallel(
-        FusionGenerator(1,1,64).to(device=nn_handler_device), 
-        device_ids=gpu_device_ids,
-        output_device=nn_handler_device
-    )
+    # # Initiate FusionNet
+    # FusionNet = nn.DataParallel(
+    #     FusionGenerator(1,1,64).to(device=nn_handler_device), 
+    #     device_ids=gpu_device_ids,
+    #     output_device=nn_handler_device
+    # )
 
     # Initiate FusionNet
     # FusionNet = FusionGenerator(1,1,64).to(device=nn_handler_device) 
@@ -253,22 +248,30 @@ def train(
     #     checkpoint = torch.load(model_path, map_location=nn_handler_device)
     #     check = FusionNet.load_state_dict(checkpoint['model_module_state_dict'])
     
-    # Initiate or load FusionNet
     if load_checkpoint:
         #model_path = f'{models_folder}FusionNet{load_checkpoint}.pth'
         #FusionNet = torch.load(model_path, map_location=nn_handler_device)
         checkpoint_path = f'{models_folder}FusionNet_checkpoint{load_checkpoint}.tar'
         checkpoint = torch.load(checkpoint_path, map_location=nn_handler_device)
-        check = FusionNet.module.load_state_dict(checkpoint['model_module_state_dict'])
+        check = FusionNet.load_state_dict(checkpoint['model_module_state_dict'])
+    else:
+        FusionNet = FusionGenerator(1,1,64).to(device=nn_handler_device) 
 
     # for name, param in FusionNet.named_parameters():
     #     if param.requires_grad:
     #         print(name, param.data)
     #     break
     
+    
+    
+    # for name, param in FusionNet.named_parameters():
+    #     if param.requires_grad:
+    #         print(name, param.data)
+    #     break
+    
     # Define optimizer and send to GPU
-    #for param in FusionNet.parameters():
-        #print(type(param), param.size())
+    for param in FusionNet.parameters():
+        print(type(param), param.size())
     optimizer = torch.optim.Adam(FusionNet.parameters(), lr=lr, weight_decay=weight_decay)
 
     # for param in optimizer.state.values():
@@ -297,8 +300,14 @@ def train(
         print(f'\tCheckpoint of model {model} at epoch {load_checkpoint} restored...')
         print(f'\tUsing network to train on images from {data_set}/{data_subset}...')
 
+    torch.save({
+                'model_module_state_dict': FusionNet.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict()
+            }, f'{models_folder}FusionNet_sd1{load_checkpoint+iE+1}.tar')
+
     # Make sure training mode is enabled
-    FusionNet.train()
+    FusionNet.eval()
     
     # Automatic mixed precision scaler
     if amp:
@@ -330,8 +339,8 @@ def train(
                     y = FusionNet(x)
                     loss = loss_func(y, y_)
             else:
-                x = Variable(batch['image']).to(device=nn_handler_device)
-                y_ = Variable(batch['annot']).to(device=nn_handler_device)
+                x = torch.ones((1, 1, 32, 32)).to(device=nn_handler_device, dtype=torch.float)
+                y_ = torch.ones((1, 1, 32, 32)).to(device=nn_handler_device, dtype=torch.float)
                 y = FusionNet(x)
                 loss = loss_func(y, y_)
 
@@ -378,10 +387,10 @@ def train(
 
             # Save FusionNet checkpoint
             torch.save({
-                'model_module_state_dict': FusionNet.module.state_dict(),
+                'model_module_state_dict': FusionNet.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict()
-            }, f'{models_folder}FusionNet_checkpoint{load_checkpoint+iE+1}.tar')
+            }, f'{models_folder}FusionNet_sd2{load_checkpoint+iE+1}.tar')
 
             # Save FusionNet
             torch.save(FusionNet, f'{models_folder}FusionNet{load_checkpoint+iE+1}.pth')
