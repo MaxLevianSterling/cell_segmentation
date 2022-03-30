@@ -1,11 +1,12 @@
 import os
 import sys
-import shutil
-import subprocess as sp
-import os
 import torch
-from threading import Thread , Timer
-import sched, time
+import shutil
+import random
+import numpy            as np
+import subprocess       as sp
+from threading          import Thread, Timer
+from math               import ceil
 
 
 class HiddenPrints:
@@ -258,3 +259,22 @@ def map_tensor_coordinates(input, coordinates, chan_dim, batch_dim):
     fx2 = f01 + d1 * (f11 - f01)
 
     return fx1 + d2 * (fx2 - fx1)  
+
+
+def reset_seeds():
+    """Resets all random seeds
+    
+    Args:
+        seed_offset (int): value to offset initial seed"""
+
+    # Generate a new seed
+    new_seed = torch.seed()
+    if new_seed >= 2**32: 
+        new_seed = new_seed % 2**32
+
+    # Reset all randomness
+    os.environ['PYTHONHASHSEED'] = str(new_seed)
+    random.seed(new_seed)
+    np.random.seed(new_seed)
+    torch.manual_seed(new_seed)
+    torch.cuda.manual_seed_all(new_seed)

@@ -1,11 +1,11 @@
 import torch
 import numpy            as np
-from torch.utils.data   import Dataset
 from utils              import path_gen
+from utils              import reset_seeds
 
 
-class LIVECell(Dataset):
-    """Custom PyTorch Dataset() class to handle LIVECell data
+class LIVECell():
+    """Custom dataset class to handle LIVECell data
         
     Note:
         Image data must be grayscale
@@ -62,10 +62,10 @@ class LIVECell(Dataset):
             ])
 
         # Load data
-        data = {}
-        data['image'] = np.load(f'{image_folder}array.npy')
+        dataset = {}
+        dataset['image'] = np.load(f'{image_folder}array.npy')
         if not self.deploy:
-            data['annot'] = np.load(f'{annot_folder}array.npy')
+            dataset['annot'] = np.load(f'{annot_folder}array.npy')
 
         # Initialize internal variables
         self.image_filenames = []
@@ -85,7 +85,8 @@ class LIVECell(Dataset):
 
         # Perform offline transform
         if offline_transforms:
-            self.dataset = offline_transforms(data)
+            with torch.no_grad():
+                self.dataset = offline_transforms(dataset)
 
         # Send to GPU
         self.dataset = {
@@ -100,38 +101,40 @@ class LIVECell(Dataset):
 
     def epoch_pretransform(self):
         
-        # Perform online epoch pretransforms
-        self.epoch_dataset = self.epoch_pretransforms(self.dataset)
-        
-        # Send to CPU
-        self.epoch_dataset = {
-            key:self.epoch_dataset[key].to(device='cpu')
-            for key in self.dataset.keys()
-        }
+        # Reset all randomness
+        reset_seeds()
 
-    def __getitem__(self, idx):
+        # Perform online epoch pretransforms
+        with torch.no_grad():
+            self.epoch_dataset = self.epoch_pretransforms(self.dataset)
+   
+    def __call__(self, batch_idxs):
         """Upon subscription or iteration
         
         Args:
-            idx (int/tensor): sample/annotation index
+            batch_idxs (tensor): sample/annotation indices
         """
 
         # If annotation data is relevant
         if not self.deploy:
 
-            # Match image and annotation identifier
-            identifier = self.image_filenames[idx]
-            annot_idx = self.annot_filenames.index(identifier)
-
-            # Make image/annotation sample
-            sample = {
-                'image': self.epoch_dataset['image'][idx, 0:1, :, :], 
-                'annot': self.epoch_dataset['annot'][annot_idx, 0:1, :, :]
+            # Make image/annotation batch
+            batch = {
+                'image': torch.index_select(
+                    self.epoch_dataset['image'], 
+                    0, 
+                    batch_idxs
+                ),
+                'annot': torch.index_select(
+                    self.epoch_dataset['annot'], 
+                    0,
+                    batch_idxs
+                ),
             }
-                      
+  
         else:
 
-            # Make image sample
-            sample = 1
+            # Make image batch
+            pass
 
-        return sample
+        return batch

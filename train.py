@@ -3,62 +3,81 @@ import sys
 import torch
 import torch.utils.data         as data
 import torchvision.utils        as v_utils
-import torchvision.transforms   as transforms
 import numpy                    as np
 from torch.autograd             import Variable
-from FusionNet                  import * 
+from FusionNet                  import *
 from datasets                   import LIVECell
+from dataloaders                import GPU_dataloader 
+from image_transforms           import Compose
+from image_transforms           import ToUnitInterval
+from image_transforms           import ToTensor
 from image_transforms           import RandomCrop
 from image_transforms           import RandomOrientation
+from image_transforms           import LocalDeform
 from image_transforms           import ToNormal
 from image_transforms           import ToBinary
-from image_transforms           import ToUnitInterval
-from image_transforms           import LocalDeform
 from image_transforms           import Noise
-from image_transforms           import ToTensor
 from utils                      import path_gen
 from utils                      import get_gpu_memory
 from utils                      import gpu_every_sec
 from utils                      import optimizer_to
+from utils                      import reset_seeds
+from math                       import ceil, floor
 from statistics                 import mean
 from GPUtil                     import getAvailable
 from inspect                    import getargspec
-from math                       import ceil
-
-
-# def worker_init_fn(worker_id):                                                          
-#     np.random.seed(np.random.get_state()[1][0] + worker_id)
 
 
 def train(
-    path = '/mnt/sdg/maxs',
-    data_set = 'LIVECell',
-    data_subset = 'trial',
-    print_separator = '$',
-    gpu_device_ids = 'all_available',
-    model = 'ReLu_128_hope',
-    load_checkpoint = 0,
-    pred_size = 128,
-    orig_size = (520, 704),
-    new_mean = .5,
-    new_std = .15,
-    localdeform = [6, 4],
-    tobinary = .9,
-    noise = .05,
-    batch_size = 128,
-    num_workers = 'ratio',
-    pin_memory = True,
-    persistent_workers = True,
-    prefetch_factor = 2,
-    drop_last = True,
-    lr = .0002,
-    weight_decay = .001,
-    gamma = 0.99993068768,
-    n_epochs = 1000,
-    save_checkpoint_interval = 500,
-    save_image_interval = 100,
-    amp = False,
-    reserved_gpus = [0, 1, 6, 7]
+
+    # Data variables
+    path                = '/mnt/sdg/maxs',
+    data_set            = 'LIVECell',
+    data_subset         = 'trial',
+
+    # GPU variables
+    gpu_device_ids      = 'all_available',
+    reserved_gpus       = [0, 1, 6, 7],
+
+    # Training variables
+    load_chkpt          = 0,
+    n_epochs            = 20000,
+    save_chkpt_interval = 1000,
+    save_image_interval = 500,
+    amp                 = True,
+
+    # Model variables
+    model               = 'base_128',
+    in_chan             = 1,
+    out_chan            = 1,
+    ngf                 = 64,
+    spat_drop_p         = .05,
+    act_fn_encode       = nn.LeakyReLU(0.2),
+    act_fn_decode       = nn.ReLU(),
+    act_fn_output       = nn.Tanh(),
+
+    # Transform variables
+    crop_size           = 128,
+    orig_size           = (520, 704),
+    localdeform         = [6, 4],
+    new_mean            = .5,
+    new_std             = .15,
+    tobinary            = .7,
+    noise               = .05,
+
+    # DataLoader variables
+    batch_size          = 128,
+    shuffle             = True,
+    drop_last           = True,
+
+    # Optimizer and scheduler variables
+    lr                  = .0002,
+    weight_decay        = .0001,
+    gamma               = 0.99993068768,
+    sched_step_size     = 1,
+
+    # Verbosity variables
+    print_sep           = '$',
 ):
     """Trains a FusionNet-type neural network
 
@@ -80,22 +99,40 @@ def train(
         path (string): path to training data folder
         data_set (string): training data set
         data_subset (string): training data subset
-        print_separator (string): print output separation
-            character
+
         gpu_device_ids (list of ints): gpu device ids used
             (default = <all available GPUs>)
+        reserved_gpus (list of ints): reserved GPUs not to be
+            used
+
         model (string): current model identifier
-        load_checkpoint (int): training epoch age of saved
+        load_chkpt (int): training epoch age of saved
             checkpoint to start training at (0 -> no checkpoint 
             loading)
+        n_epochs (int): number of training epochs 
+        save_chkpt_interval (int): epoch interval with which
+            network checkpoint is saved 
+        save_image_interval (int): epoch interval with which
+            example output is saved
+        amp (bool): whether automatic precision is to be used
+
+        crop_size (int / tuple of ints): HxW output dimensions
+            of crops 
+        orig_size (int / tuple of ints): HxW input dimensions
+            of original data 
         localdeform (list of ints): [number of deforming 
-            vectors along each axis (default = 12), maximum 
-            vector magnitude (default = 8)
+            vectors along each axis, maximum vector magnitude]
+        new_mean (float): normalized mean of the input images
+        new_std (float): normalized standard deviation of the 
+            input images
         tobinary (float): float to binary cutoff point 
-            (default = .5)
-        noise (float): standard deviation of Gaussian noise (
-            default = .05)
+        noise (float): standard deviation of Gaussian noise 
+
         batch_size (int): data batch size (default = <maximum>)
+        shuffle (bool): whether input data is to be shuffled
+        num_workers (int): number of workers to be used for 
+            multi-process data loading (default = 'ratio' ->
+            spawns a worker for each batch in an epoch)
         pin_memory (bool): tensors fetched by DataLoader pinned
             in memory, enabling faster data transfer to
             CUDA-enabled GPUs.
@@ -103,12 +140,22 @@ def train(
             shut down after a dataset has been consumed once,
             allowing the workers Dataset instances to remain
             alive. 
-        lr (float): network learning rate (default = .0002)
-        n_epochs (int): number of training epochs 
-        save_checkpoint_interval (int): epoch interval with which
-            network checkpoint is saved 
-        save_image_interval (int): epoch interval with which
-            example output is saved
+        prefetch_factor (int): number of samples to prefetch by
+            multi-process workers
+        drop_last (bool): whether to use the last unequally 
+            sized batch per dataset consumption
+
+        lr (float): initial network learning rate
+        weight_decay (float): size of the L2 penalty for network
+            weights
+        gamma (float): ground number of epoch exponent with which
+            scheduler updates network learning rate each scheduler
+            step size
+        sched_step_size (int): epoch step size with which to apply 
+            gamma to learning rate
+
+        print_sep (string): print output separation
+            character
 
     Returns:
         FusionNet checkpoints in the models subfolder along with 
@@ -123,7 +170,7 @@ def train(
     """
 
     # Being beautiful is not a crime
-    print('\n', f'{print_separator}' * 87, '\n', sep='')
+    print('\n', f'{print_sep}' * 87, '\n', sep='')
 
     # Generate folder path strings
     models_folder = path_gen([
@@ -181,10 +228,10 @@ def train(
         raise RuntimeError('\n\tAt least one GPU must be available to train FusionNet')
     
     # Indicate how output will be saved
-    print(f'\tFusionNet checkpoints will be saved in path/models every {save_checkpoint_interval} epochs...')
-    print(f'\tEpoch losses will also be saved there every {save_checkpoint_interval} epochs...')
+    print(f'\tFusionNet checkpoints will be saved in path/models every {save_chkpt_interval} epochs...')
+    print(f'\tEpoch losses will also be saved there every {save_chkpt_interval} epochs...')
     print(f'\tExample network outputs will be saved in path/results every {save_image_interval} epochs...')
-    print('\n\t', f'{print_separator}' * 71, '\n', sep='')
+    print('\n\t', f'{print_sep}' * 71, '\n', sep='')
    
     # Initiate custom DataSet() instance
     LIVECell_train_dset = LIVECell(
@@ -192,12 +239,12 @@ def train(
         data_set=data_set,
         data_subset=data_subset,
         dataset_device=dataset_device,
-        offline_transforms=transforms.Compose([
+        offline_transforms=Compose([
             ToUnitInterval(),
             ToTensor(),
         ]),
-        epoch_pretransforms=transforms.Compose([
-            RandomCrop(input_size=orig_size, output_size=pred_size),
+        epoch_pretransforms=Compose([
+            RandomCrop(input_size=orig_size, output_size=crop_size),
             RandomOrientation(),
             LocalDeform(size=localdeform[0], ampl=localdeform[1]),
             ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
@@ -205,97 +252,54 @@ def train(
             Noise(std=noise, items=[0]),
         ])
     )
-
-    # Reset number of workers if necessary
-    if num_workers == 'max':
-        num_workers = len(gpu_device_ids)
-    elif num_workers == 'ratio':
-        num_workers = min([
-            ceil(len(LIVECell_train_dset)/batch_size), 
-            len(gpu_device_ids)
-        ])
-
+      
     # Initiate standard DataLoader() instance
-    dataloader = data.DataLoader(
+    dataloader = GPU_dataloader(
         LIVECell_train_dset,
+        dataset_device=dataset_device,
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
+        shuffle=shuffle,
         drop_last=drop_last,
-        #worker_init_fn=worker_init_fn
     )
 
     # Define loss function 
     loss_func = nn.SmoothL1Loss()
-    # loss_func = nn.MSELoss()
-    # loss_func = nn.L1Loss()
 
     # Initiate FusionNet
     FusionNet = nn.DataParallel(
-        FusionGenerator(1,1,64).to(device=nn_handler_device), 
+        FusionGenerator(
+            in_chan, 
+            out_chan, 
+            ngf,
+            spat_drop_p,
+            act_fn_encode,
+            act_fn_decode,
+            act_fn_output
+        ).to(device=nn_handler_device), 
         device_ids=gpu_device_ids,
-        output_device=nn_handler_device
+        output_device=nn_handler_device,
     )
-
-    # Initiate FusionNet
-    # FusionNet = FusionGenerator(1,1,64).to(device=nn_handler_device) 
-        
-    # for name, param in FusionNet.named_parameters():
-    #     if param.requires_grad:
-    #         print(name, param.data)
-    #     break
-
-    # if load_checkpoint:
-    #     model_path = f'{models_folder}FusionNet_checkpoint{load_checkpoint}.tar'
-    #     checkpoint = torch.load(model_path, map_location=nn_handler_device)
-    #     check = FusionNet.load_state_dict(checkpoint['model_module_state_dict'])
     
-    # Initiate or load FusionNet
-    if load_checkpoint:
-        #model_path = f'{models_folder}FusionNet{load_checkpoint}.pth'
-        #FusionNet = torch.load(model_path, map_location=nn_handler_device)
-        checkpoint_path = f'{models_folder}FusionNet_checkpoint{load_checkpoint}.tar'
-        checkpoint = torch.load(checkpoint_path, map_location=nn_handler_device)
-        check = FusionNet.module.load_state_dict(checkpoint['model_module_state_dict'])
+    # Load checkpoint and FusionNet
+    if load_chkpt:
+        chkpt_path = f'{models_folder}FusionNet_checkpoint{load_chkpt}.tar'
+        chkpt = torch.load(chkpt_path, map_location=nn_handler_device)
+        load_check = FusionNet.module.load_state_dict(chkpt['model_module_state_dict'])
+        if not load_check:
+            raise RuntimeError('\n\tNot all module parameters loaded correctly')
+        print(f'\tCheckpoint of model {model} at epoch {load_chkpt} restored...')
+        print(f'\tUsing network to train on images from {data_set}/{data_subset}...')
 
-    # for name, param in FusionNet.named_parameters():
-    #     if param.requires_grad:
-    #         print(name, param.data)
-    #     break
-    
     # Define optimizer and send to GPU
-    #for param in FusionNet.parameters():
-        #print(type(param), param.size())
     optimizer = torch.optim.Adam(FusionNet.parameters(), lr=lr, weight_decay=weight_decay)
-
-    # for param in optimizer.state.values():
-    #     print(param)
-    #     break
-
-    if load_checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
-    # for param in optimizer.state.values():
-    #     print(param)
-    #     break
-
+    if load_chkpt:
+        optimizer.load_state_dict(chkpt['optimizer_state_dict'])
     optimizer_to(optimizer, torch.device(nn_handler_device))
     
-    # for param in optimizer.state.values():
-    #     print(param)
-    #     break
-
     # Define scheduler
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=gamma)
-
-    # Optional model checkpoint loading
-    if load_checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        print(f'\tCheckpoint of model {model} at epoch {load_checkpoint} restored...')
-        print(f'\tUsing network to train on images from {data_set}/{data_subset}...')
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=sched_step_size, gamma=gamma)
+    if load_chkpt:
+        scheduler.load_state_dict(chkpt['scheduler_state_dict'])
 
     # Make sure training mode is enabled
     FusionNet.train()
@@ -319,38 +323,46 @@ def train(
         # Use DataLoader() to get batch
         for iB, batch in enumerate(dataloader):
 
-            # Set the gradients of the optimized tensor to zero
+            # Set gradients to zero
+            FusionNet.zero_grad()
             optimizer.zero_grad()
             
-            # Wrap the batch, pass it forward and calculate loss
+            # If automatic mixed precision is enabled
             if amp:
                 with torch.cuda.amp.autocast():
+
+                    # Wrap the batch and pass it forward
                     x = Variable(batch['image']).to(device=nn_handler_device)
                     y_ = Variable(batch['annot']).to(device=nn_handler_device)
                     y = FusionNet(x)
+
+                    # Calculate loss and pass it backwards
                     loss = loss_func(y, y_)
+                    scaler.scale(loss).backward()
+
+                    # Update optimizer
+                    scaler.step(optimizer)
+
+                    # Record scale and update
+                    scale = scaler.get_scale()
+                    scaler.update()
+
+                    # Check for gradient overflow
+                    optimizer_skipped = (scale > scaler.get_scale())
             else:
+
+                # Wrap the batch and pass it forward
                 x = Variable(batch['image']).to(device=nn_handler_device)
                 y_ = Variable(batch['annot']).to(device=nn_handler_device)
                 y = FusionNet(x)
+                
+                # Calculate loss and pass it backwards
                 loss = loss_func(y, y_)
-
-            # Pass the loss backwards
-            if amp:
-                scaler.scale(loss).backward()
-            else:
                 loss.backward()
 
-            # Update optimizer parameters
-            if amp:
-                scaler.step(optimizer)
-            else:
+                # Update optimizer
                 optimizer.step()
 
-            # Updates scaler for next iteration
-            if amp:
-                scaler.update()
-            
             # Record individual batch losses
             batch_loss_log.append(loss.item())
 
@@ -368,26 +380,25 @@ def train(
             sys.stdout.flush()
         
         # Update learning rate via scheduler
-        scheduler.step()
+        if amp:
+            if not optimizer_skipped:
+                scheduler.step()
 
         # Note the average loss of the epoch
         loss_log.append(mean(batch_loss_log))
 
         # At a regular interval
-        if not (iE+1) % save_checkpoint_interval:
+        if not (iE+1) % save_chkpt_interval:
 
             # Save FusionNet checkpoint
             torch.save({
                 'model_module_state_dict': FusionNet.module.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict()
-            }, f'{models_folder}FusionNet_checkpoint{load_checkpoint+iE+1}.tar')
-
-            # Save FusionNet
-            torch.save(FusionNet, f'{models_folder}FusionNet{load_checkpoint+iE+1}.pth')
+            }, f'{models_folder}FusionNet_checkpoint{load_chkpt+iE+1}.tar')
 
             # Save loss log
-            with open(f'{results_folder}FusionNet_training_loss_fromcheckpoint{load_checkpoint}.txt', 'w') as outfile:
+            with open(f'{results_folder}FusionNet_training_loss_from_checkpoint{load_chkpt}.txt', 'w') as outfile:
                 for iE, epoch_loss in enumerate(loss_log):
                     args = f'{iE},{epoch_loss}\n'
                     outfile.write(args)
@@ -399,15 +410,15 @@ def train(
             iI = np.random.randint(0, list(batch.values())[0].shape[0])
             v_utils.save_image(
                 x[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
-                f'{results_folder}FusionNet_image_checkpoint{load_checkpoint+iE+1}_epoch{iE+1}.png'
+                f'{results_folder}FusionNet_image_checkpoint{load_chkpt+iE+1}_epoch{iE+1}.png'
             )
             v_utils.save_image(
                 y_[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
-                f'{results_folder}FusionNet_annot_checkpoint{load_checkpoint+iE+1}_epoch{iE+1}.png'
+                f'{results_folder}FusionNet_annot_checkpoint{load_chkpt+iE+1}_epoch{iE+1}.png'
             )
             v_utils.save_image(
                 y[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
-                f'{results_folder}FusionNet_pred_checkpoint{load_checkpoint+iE+1}_epoch{iE+1}.png'
+                f'{results_folder}FusionNet_pred_checkpoint{load_chkpt+iE+1}_epoch{iE+1}.png'
             )
 
 

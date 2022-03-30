@@ -1,18 +1,178 @@
 import cv2 
 import torch
+import warnings
 import numpy                        as np
 import torchvision.utils            as v_utils
 import torch.nn.functional          as tfunc
 from math                           import ceil
-from utils                          import unpad
 from utils                          import map_tensor_coordinates
-from utils                          import HiddenPrints
 from scipy.ndimage.interpolation    import map_coordinates
-import warnings
 
 
-class RandomCrop(object):
-    """Randomly crops input """
+class Compose():
+    """ Composes several transforms together
+   
+    Warning:
+            PyTorch random seed is automatically reset
+                when a worker is initialized, but other
+                random libraries not. Use custom 
+                worker_init_fn or other function to 
+                achieve this per epoch or otherwise.
+
+    Example:
+        epoch_pretransforms=Compose([
+            RandomCrop(input_size=orig_size, output_size=crop_size),
+            RandomOrientation(),
+            LocalDeform(size=localdeform[0], ampl=localdeform[1]),
+            ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
+            ToBinary(cutoff=tobinary, items=[1]),
+            Noise(std=noise, items=[0]),
+        ])
+    """
+
+    def __init__(self, transforms):
+        """ Args:
+            transforms (list of objects): image transforms
+        """      
+
+        self.transforms = transforms
+
+    def __call__(self, sample):
+        """ Args:
+            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
+                dict): input images
+                    
+        Returns:
+            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
+                output images
+        """    
+
+        # Conduct transforms sequentially
+        for transform in self.transforms:
+            sample = transform(sample)
+
+        return sample
+
+    def __repr__(self):
+        """Generate custom string representation"""
+
+        format_string = self.__class__.__name__ + '('
+        for t in self.transforms:
+            format_string += '\n'
+            format_string += '    {0}'.format(t)
+        format_string += '\n)'
+
+        return format_string
+
+
+class ToUnitInterval():
+    """ Converts a numpy array or list of numpy arrays 
+    from uint8 range to the unit interval
+    """
+
+    def __call__(self, sample):
+        """ Args:
+            sample (string:[np.ndarray] dict): input images
+                    
+        Returns:
+            (string:[np.ndarray.float] dict): output images
+        """   
+
+        # Get input dictionary values
+        values = [
+            value 
+            for value in sample.values()
+        ]
+
+        # Transform to unit interval
+        if isinstance(values[0], list) \
+                and isinstance(values[0][0], np.ndarray):
+            values = [
+                [
+                    values[iV][iC].astype('float32') / 255
+                    for iC in range(len(values[0]))
+                ]
+                for iV in range(len(values))
+            ]
+        elif isinstance(values[0], np.ndarray):
+            values = [
+               values[iV].astype('float32') / 255 
+               for iV in range(len(values))
+            ]
+
+        return {
+            list(sample.keys())[iV]: values[iV] 
+            for iV in range(len(values))
+        }
+
+
+class ToTensor():
+    """ Converts a numpy array or list of numpy arrays to
+    PyTorch tensor format
+    """
+
+    def __call__(self, sample):
+        """ Args:
+            sample (string:[np.ndarray] dict): input images
+                    
+        Returns:
+            (string:tensor dict): output tensors
+        """   
+
+        # Get input dictionary values        
+        values = [
+            value 
+            for value in sample.values()
+        ]
+
+        # Convert to tensor and expand channel dimension
+        if isinstance(values[0], list) \
+                and isinstance(values[0][0], np.ndarray):
+            values = [
+                [
+                    np.expand_dims(values[iV][iC], axis=1)
+                    for iC in range(len(values[0]))
+                ]
+                for iV in range(len(values))
+            ]            
+            values = [
+                [
+                    torch.from_numpy(values[iV][iC])
+                    for iC in range(len(values[0]))
+                ]
+                for iV in range(len(values))
+            ]
+        elif isinstance(values[0], np.ndarray) \
+                and len(values[0].shape) == 2:
+            values = [
+                np.expand_dims(values[iV], axis=0) 
+                for iV in range(len(values))
+            ]
+            values = [
+                torch.from_numpy(values[iV]) 
+                for iV in range(len(values))
+            ]
+        elif isinstance(values[0], np.ndarray) \
+                and len(values[0].shape) == 3:
+            values = [
+                np.expand_dims(values[iV], axis=1) 
+                for iV in range(len(values))
+            ]
+            values = [
+                torch.from_numpy(values[iV]) 
+                for iV in range(len(values))
+            ]
+        else:
+            raise RuntimeError('Wrong input format used')
+            
+        return {
+            list(sample.keys())[iV]: values[iV] 
+            for iV in range(len(values))
+        }
+
+
+class RandomCrop():
+    """Randomly crops input"""
 
     def __init__(self, input_size, output_size):
         """ Args:
@@ -36,11 +196,11 @@ class RandomCrop(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.array or BxCxHxW tensor) 
+            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
                 dict): input images
                     
         Returns:
-            (string:(HxW np.array or BxCxHxW tensor) dict): 
+            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
                 output images
         """    
 
@@ -62,12 +222,14 @@ class RandomCrop(object):
 
         # Crop
         for iV in range(len(values)):
-            if isinstance(values[iV], np.ndarray) and len(values[iV].shape) == 2:
+            if isinstance(values[iV], np.ndarray) \
+                    and len(values[iV].shape) == 2:
                 values[iV] = values[iV][
                     top: top + self.output_size[0],
                     left: left + self.output_size[1]
                 ]
-            elif torch.is_tensor(values[iV]) and len(values[iV].shape) == 4:
+            elif torch.is_tensor(values[iV]) \
+                    and len(values[iV].shape) == 4:
                 values[iV] = values[iV][
                     :,
                     :,
@@ -78,11 +240,11 @@ class RandomCrop(object):
         # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_crop_image_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/crop_image.png'
         # )
         # v_utils.save_image(
         #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_crop_annot_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/crop_annot.png'
         # )
 
         return {
@@ -91,21 +253,21 @@ class RandomCrop(object):
         }
 
 
-class RandomOrientation(object):
+class RandomOrientation():
     """Randomly orients input into one of eight orientations 
     (all 90 degree rotations and mirrors)
     """
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.array or BxCxHxW tensor) 
+            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
                 dict): input images
                     
         Returns:
-            (string:(HxW np.array or BxCxHxW tensor) dict): 
+            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
                 output images
         """   
-        
+
         # Get input dictionary values
         values = [
             value 
@@ -117,36 +279,46 @@ class RandomOrientation(object):
         n_rotations = torch.randint(low=0, high=4, size=(1,))   
 
         for iV in range(len(values)):
-            if isinstance(values[iV], np.ndarray) and len(values[iV].shape) == 2:
+            if isinstance(values[iV], np.ndarray) \
+                    and len(values[iV].shape) == 2:
 
                 # Vertical flip
-                values[iV] = np.flip(values[iV], 0) if mirror > 2 else values[iV]
+                if mirror > 2:
+                    values[iV] = np.flip(values[iV], 0)
 
                 # Horizontal flip
-                values[iV] = np.flip(values[iV], 1) if mirror % 2 == 0 else values[iV]
+                if mirror % 2 == 0:
+                    values[iV] = np.flip(values[iV], 1) 
 
                 # Counterclockwise rotation
                 values[iV] = np.rot90(values[iV], n_rotations)
 
-            elif torch.is_tensor(values[iV]) and len(values[iV].shape) == 4:
+            elif torch.is_tensor(values[iV]) \
+                    and len(values[iV].shape) == 4:
                 
                 # Vertical flip
-                values[iV] = torch.flip(values[iV], [2]) if mirror > 2 else values[iV]
+                if mirror > 2:
+                    values[iV] = torch.flip(values[iV], [2])
 
                 # Horizontal flip
-                values[iV] = torch.flip(values[iV], [3]) if mirror % 2 == 0 else values[iV]
+                if mirror % 2 == 0:
+                    values[iV] = torch.flip(values[iV], [3])
 
                 # Counterclockwise rotation
-                values[iV] = torch.rot90(values[iV], n_rotations.item(), [2, 3])
+                values[iV] = torch.rot90(
+                    values[iV],
+                    n_rotations.item(), 
+                    [2, 3]
+                )
 
         # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_orient_image_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/orient_image.png'
         # )
         # v_utils.save_image(
         #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_orient_annot_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/orient_annot.png'
         # )
 
         return {
@@ -155,9 +327,9 @@ class RandomOrientation(object):
         }
 
 
-class LocalDeform(object):
+class LocalDeform():
     """Locally deforms input based on a randomly 
-    generated sparse vector array
+    generated sparse vector field
     """
 
     def __init__(self, size, ampl):
@@ -179,11 +351,11 @@ class LocalDeform(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.array or BxCxHxW tensor) 
+            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
                 dict): input images
                     
         Returns:
-            (string:(HxW np.array or BxCxHxW tensor) dict): 
+            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
                 output images
         """   
 
@@ -200,7 +372,11 @@ class LocalDeform(object):
 
             # Initialize random sparse vector field
             dS = [
-                np.random.uniform(-self.ampl, self.ampl, size=self.size) 
+                np.random.uniform(
+                    -self.ampl, 
+                    self.ampl, 
+                    size=self.size
+                ) 
                 for iS in range(2)
             ]
 
@@ -217,12 +393,20 @@ class LocalDeform(object):
             ]       
             
             # Determine axis-wise pixel transformations
-            X, Y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]))
-            indices = np.reshape(Y+dS[1], (-1, 1)), np.reshape(X+dS[0], (-1, 1))
+            X, Y = np.meshgrid(
+                np.arange(shape[0]), 
+                np.arange(shape[1])
+            )
+            indices = np.reshape(Y+dS[1], (-1, 1)), \
+                np.reshape(X+dS[0], (-1, 1))
 
             # Deform
             values = [
-                map_coordinates(values[iV], indices, order=1).reshape(shape) 
+                map_coordinates(
+                    values[iV], 
+                    indices, 
+                    order=1
+                ).reshape(shape) 
                 for iV in range(len(values))
             ]
 
@@ -238,7 +422,10 @@ class LocalDeform(object):
                     1, 
                     self.size[0] - 2, 
                     self.size[1] - 2
-                ).uniform_(-self.ampl, self.ampl).to(device=current_device, dtype=torch.float)
+                ).uniform_(
+                    -self.ampl, 
+                    self.ampl
+                ).to(device=current_device, dtype=torch.float)
                 for iS in range(2)
             ]
 
@@ -254,7 +441,10 @@ class LocalDeform(object):
                 dS = [
                     tfunc.interpolate(
                         dS[iS], 
-                        scale_factor=(shape[2]/self.size[0], shape[3]/self.size[1]), 
+                        scale_factor=(
+                            shape[2]/self.size[0], 
+                            shape[3]/self.size[1]
+                        ), 
                         align_corners=True, 
                         mode='bilinear'
                     )
@@ -262,10 +452,21 @@ class LocalDeform(object):
                 ]       
         
             # Determine axis-wise pixel transformations
-            X, Y = torch.meshgrid(torch.arange(shape[2]).to(device=current_device, dtype=torch.float), torch.arange(shape[3]).to(device=current_device, dtype=torch.float), indexing='xy')
+            X, Y = torch.meshgrid(
+                torch.arange(shape[2]).to(
+                    device=current_device, 
+                    dtype=torch.float
+                ), 
+                torch.arange(shape[3]).to(
+                    device=current_device, 
+                    dtype=torch.float
+                ), 
+                indexing='xy'
+            )
             X = X.unsqueeze(0).repeat(shape[0], 1, 1).unsqueeze(1)
             Y = Y.unsqueeze(0).repeat(shape[0], 1, 1).unsqueeze(1)
-            indices = torch.reshape(Y+dS[1], (-1, 1)), torch.reshape(X+dS[0], (-1, 1))
+            indices = torch.reshape(Y+dS[1], (-1, 1)), \
+                torch.reshape(X+dS[0], (-1, 1))
             indices = torch.cat((indices[0], indices[1]), dim=1)
             indices = torch.transpose(indices, 0, 1)
 
@@ -276,22 +477,30 @@ class LocalDeform(object):
             batch_ind = torch.arange(
                 0, 
                 shape[0]
-            ).repeat_interleave(shape[2] * shape[3]).long().to(device=current_device, dtype=torch.long)
+            ).repeat_interleave(shape[2] * shape[3]).long().to(
+                device=current_device, 
+                dtype=torch.long
+            )
 
             # Deform
             values = [
-                map_tensor_coordinates(values[iV], indices, chan_ind, batch_ind).reshape(shape) 
+                map_tensor_coordinates(
+                    values[iV], 
+                    indices, 
+                    chan_ind, 
+                    batch_ind
+                ).reshape(shape) 
                 for iV in range(len(values))
             ]
 
         # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_deform_image_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/deform_image.png'
         # )
         # v_utils.save_image(
         #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_deform_annot_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/deform_annot.png'
         # )
 
         return {
@@ -300,49 +509,83 @@ class LocalDeform(object):
         }
 
 
-class ToUnitInterval(object):
-    """Converts a numpy array or list of numpy arrays 
-    from uint8 range to the unit interval
-    """
+class ToNormal():
+    """Normalizes input according to new parameters
+    for the entire set"""
 
+    def __init__(self, items, new_mean, new_std):
+        """ Args:
+            items (list): list of sample value numbers 
+                to convert to binary
+            new_mean (float): the new set mean
+            new_std (float): the new set standard deviation
+        """    
+
+        assert isinstance(items, list)
+        self.items = items
+
+        assert isinstance(new_mean, float)
+        assert new_mean > 0 and new_mean < 1
+        self.new_mean = new_mean
+
+        assert isinstance(new_std, float)
+        assert new_std > 0 and new_std < 1
+        self.new_std = new_std
+        
     def __call__(self, sample):
         """ Args:
-            sample (string:np.array dict): input images
+            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
+                dict): input images
                     
         Returns:
-            (string:np.array.float dict): output images
+            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
+                output images
         """   
 
-        # Get input dictionary values
+        # Get input dictionary values        
         values = [
             value 
             for value in sample.values()
         ]
+        
+        # Get old parameters
+        old_mean = torch.mean(values[0])
+        old_std = torch.std(values[0])
 
-        # Transform to unit interval
-        if isinstance(values[0], list):
-            values = [
-                [
-                    values[iV][iC].astype('float32') / 255
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]
-        else:
-            values = [
-               values[iV].astype('float32') / 255 
-               for iV in range(len(values))
-            ]
+        # Transform to new normal distribution
+        values = [
+            ((values[iV] - old_mean) / old_std) \
+                * self.new_std + self.new_mean
+            if iV in self.items
+            else values[iV]
+            for iV in range(len(values)) 
+        ] 
 
+        # Clip
+        values = [
+            torch.clip(values[iV], 0, 1)
+            for iV in range(len(values)) 
+        ] 
+
+        # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/normal_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/normal_annot.png'
+        # )
+         
         return {
             list(sample.keys())[iV]: values[iV] 
             for iV in range(len(values))
         }
+      
 
-
-class ToBinary(object):
-    """Converts a numpy array or list of numpy arrays 
-    from unit interval range to binary based on a cutoff
+class ToBinary():
+    """Converts input from unit interval range to binary 
+        based on a cutoff
     """
 
     def __init__(self, cutoff, items):
@@ -361,10 +604,12 @@ class ToBinary(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:[np.array].float dict): input images
+            sample (string:([HxW np.ndarray.float] or 
+                BxCxHxW tensor) dict): input images
                     
         Returns:
-            (string:np.array.uint8 dict): output images
+            (string:([HxW np.ndarray] or BxCxHxW tensor) dict): 
+                output images
         """   
 
         # Get input dictionary values
@@ -374,7 +619,8 @@ class ToBinary(object):
         ]
 
         # Transform to binary as per cutoff
-        if isinstance(values[0], list):
+        if isinstance(values[0], list) \
+                and isinstance(values[0][0], np.ndarray):
             values = [
                 [
                     np.where(values[iV][iC] > self.cutoff, 1, 0)
@@ -383,39 +629,46 @@ class ToBinary(object):
                 for iV in range(len(values)) 
                 if iV in self.items
             ]            
-        else:
-            if len(values[0].shape) == 2:
-                values = [
-                    np.where(values[iV] > self.cutoff, 1, 0).astype('uint8')
-                    if iV in self.items
-                    else values[iV]
-                    for iV in range(len(values))
-                ]
-            elif len(values[0].shape) == 4:
-                
-                # Get current GPU device
-                current_device = f'cuda:{values[0].get_device()}'
-                one = torch.ones(1).to(device=current_device, dtype=torch.uint8)
-                zero = torch.zeros(1).to(device=current_device, dtype=torch.uint8)
-                values = [
-                    torch.where(
-                        values[iV] > self.cutoff, 
-                        one, 
-                        zero
-                    )
-                    if iV in self.items
-                    else values[iV]
-                    for iV in range(len(values))
-                ]
+        elif torch.is_tensor(values[0]) \
+                and len(values[0].shape) == 2:
+            values = [
+                np.where(
+                    values[iV] > self.cutoff, 1, 0
+                ).astype('uint8')
+                if iV in self.items
+                else values[iV]
+                for iV in range(len(values))
+            ]
+        elif torch.is_tensor(values[0]) \
+                and len(values[0].shape) == 4:
+            current_device = f'cuda:{values[0].get_device()}'
+            one = torch.ones(1).to(
+                device=current_device, 
+                dtype=torch.uint8
+            )
+            zero = torch.zeros(1).to(
+                device=current_device, 
+                dtype=torch.uint8
+            )
+            values = [
+                torch.where(
+                    values[iV] > self.cutoff, 
+                    one, 
+                    zero
+                )
+                if iV in self.items
+                else values[iV]
+                for iV in range(len(values))
+            ]
 
         # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_binary_image_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/binary_image.png'
         # )
         # v_utils.save_image(
         #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_binary_annot_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/binary_annot.png'
         # )
 
         return {
@@ -424,7 +677,7 @@ class ToBinary(object):
         }
 
 
-class Noise(object):
+class Noise():
     """Adds noise to a numpy array or list of numpy 
     arrays 
     """
@@ -446,10 +699,12 @@ class Noise(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:np.array dict): input images
+            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
+                dict): input images
                     
         Returns:
-            (string:np.array dict): output images
+            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
+                output images
         """   
 
         # Get input dictionary values
@@ -481,149 +736,20 @@ class Noise(object):
         # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_noise_image_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/noise_image.png'
         # )
         # v_utils.save_image(
         #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_noise_annot_snapshot_image.png'
+        #     f'/mnt/sdg/maxs/results/LIVECell/noise_annot.png'
         # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
             for iV in range(len(values))
         }
-
-
-class ToTensor(object):
-    """Converts a numpy array or list of numpy arrays to
-    PyTorch tensor format
-    """
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:[np.array] dict): input images
-                    
-        Returns:
-            (string:tensor dict): output tensors
-        """   
-
-        # Get input dictionary values        
-        values = [
-            value 
-            for value in sample.values()
-        ]
-
-        # Convert to tensor and expand 1st dimension
-        if isinstance(values[0], list):
-            values = [
-                [
-                    np.expand_dims(values[iV][iC], axis=1)
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]            
-            values = [
-                [
-                    torch.from_numpy(values[iV][iC])
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]
-        elif len(values[0].shape) > 2:
-            values = [
-                np.expand_dims(values[iV], axis=1) 
-                for iV in range(len(values))
-            ]
-            values = [
-                torch.from_numpy(values[iV]) 
-                for iV in range(len(values))
-            ]
-        else:
-            values = [
-                np.expand_dims(values[iV], axis=0) 
-                for iV in range(len(values))
-            ]
-            values = [
-                torch.from_numpy(values[iV]) 
-                for iV in range(len(values))
-            ]
-            
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-
-
-class ToNormal(object):
-    """Crops a numpy array regularly to get a list of crops
-    comprising the entire array
-    """
-
-    def __init__(self, items, new_mean, new_std):
-        """ Args:
-            input_size (int/tuple): input image sizes
-            output_size (int/tuple): output image size
-        """    
-
-        assert isinstance(items, list)
-        self.items = items
-
-        assert isinstance(new_std, float)
-        assert new_std > 0 and new_std < 1
-        self.new_std = new_std
+  
         
-        assert isinstance(new_mean, float)
-        assert new_mean > 0 and new_mean < 1
-        self.new_mean = new_mean
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:np.array dict): input images
-                    
-        Returns:
-            (string:[np.arrays] dict): output images
-        """   
-
-        # Get input dictionary values        
-        values = [
-            value 
-            for value in sample.values()
-        ]
-        
-        old_mean = torch.mean(values[0])
-        old_std = torch.std(values[0])
-
-        # Transform to new normal distribution
-        values = [
-            ((values[iV] - old_mean) / old_std) * self.new_std + self.new_mean
-            if iV in self.items
-            else values[iV]
-            for iV in range(len(values)) 
-        ] 
-
-        # Clip
-        values = [
-            torch.clip(values[iV], 0, 1)
-            for iV in range(len(values)) 
-        ] 
-
-        # Plotting utility
-        # v_utils.save_image(
-        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_normal_image_snapshot_image.png'
-        # )
-        # v_utils.save_image(
-        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/FusionNet_normal_annot_snapshot_image.png'
-        # )
-         
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-        
-        
-class FullCrop(object):
+class FullCrop():
     """Crops a numpy array regularly to get a list of crops
     comprising the entire array
     """
@@ -650,10 +776,10 @@ class FullCrop(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:np.array dict): input images
+            sample (string:np.ndarray dict): input images
                     
         Returns:
-            (string:[np.arrays] dict): output images
+            (string:[np.ndarrays] dict): output images
         """   
 
         # Get input dictionary values        
@@ -704,7 +830,7 @@ class FullCrop(object):
         }
 
 
-class StackOrient(object):
+class StackOrient():
     """Creates a stack of all 8 numpy array orientations   
     attainable by a combination of 90 degree rotations 
     in place of each numpy array input list item
@@ -712,10 +838,10 @@ class StackOrient(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:[np.array] dict): input images
+            sample (string:[np.ndarray] dict): input images
                     
         Returns:
-            (string:[np.arrays] dict): output images
+            (string:[np.ndarrays] dict): output images
         """   
 
         # Get input dictionary values        
@@ -760,148 +886,7 @@ class StackOrient(object):
         }
 
 
-class Squeeze(object):
-    """Squeezes a numpy array or list of numpy arrays 
-    in the 1st dimension
-    """
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:[np.array] dict): input images
-                    
-        Returns:
-            (string:[np.array] dict): output images
-        """   
-
-        # Get input dictionary values
-        values = [
-            value 
-            for value in sample.values()
-        ]
-
-        # Squeeze
-        if isinstance(values[0], list):
-            values = [
-                [
-                    np.squeeze(values[iV][iC], axis=1)
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]
-        else:
-            values = [
-                np.squeeze(values[iV], axis=1) 
-                for iV in range(len(values))
-            ]
-
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-
-
-class ToFullInterval(object):
-    """Converts a numpy array or list of numpy arrays 
-    from the unit interval to uint8 range
-    """
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:[np.array] dict): input images
-                    
-        Returns:
-            (string:[np.array] dict): output images
-        """   
-
-        # Get input dictionary values
-        values = [
-            value 
-            for value in sample.values()
-        ]
-
-        # Convert to full uint8 range
-        if isinstance(values[0], list):
-            values = [
-                [
-                    values[iV][iC] * 255
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]
-        else:
-           values = [
-               values[iV] * 255 
-               for iV in range(len(values))
-            ]
-
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-
-
-class Unpadding(object):
-    """Unpads a numpy array or list of numpy arrays"""
-
-    def __init__(self, width):
-        """ Args:
-            width (int): unpadding width
-        """   
-
-        assert isinstance(width, int)
-        if isinstance(width, int):
-            self.width = width
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:[np.array] dict): input images
-                    
-        Returns:
-            (string:[np.array] dict): output images
-        """   
-
-        # Get input dictionary values
-        values = [
-            value 
-            for value in sample.values()
-        ]
-
-        # Unpad
-        if isinstance(values[0], list):
-            values = [
-                [
-                    unpad(
-                        values[iV][iC], 
-                        (
-                            (0, 0), 
-                            (self.width, self.width), 
-                            (self.width, self.width)
-                        )
-                    ) 
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]
-        else:
-            values = [
-                unpad(
-                    values[iV], 
-                    (
-                        (0, 0), 
-                        (self.width, self.width), 
-                        (self.width, self.width)
-                    )
-                ) 
-                for iV in range(len(values))
-            ]
-
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-
-
-class StackReorient(object):
+class StackReorient():
     """Reorients a list of numpy array stack of all 8 
     orientations attainable by a combination of 90 degree 
     rotations back into their original position
@@ -909,10 +894,10 @@ class StackReorient(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:[np.array] dict): input images
+            sample (string:[np.ndarray] dict): input images
                     
         Returns:
-            (string:[np.array] dict): output images
+            (string:[np.ndarray] dict): output images
         """   
 
         # Get input dictionary values
@@ -963,17 +948,17 @@ class StackReorient(object):
         }
 
 
-class StackMean(object):
+class StackMean():
     """Averages a list of numpy array stacks across the 0th 
     dimension
     """
 
     def __call__(self, sample):
         """ Args:
-            sample (string:[np.array] dict): input images
+            sample (string:[np.ndarray] dict): input images
                     
         Returns:
-            (string:[np.array] dict): output images
+            (string:[np.ndarray] dict): output images
         """   
 
         # Get input dictionary values
@@ -999,7 +984,7 @@ class StackMean(object):
         }
         
         
-class Uncrop(object):
+class Uncrop():
     """Merges a list of regularly cropped numpy arrays
     back into an averaged array in the shape of the
     original array
@@ -1027,10 +1012,10 @@ class Uncrop(object):
 
     def __call__(self, sample):
         """ Args:
-            sample (string:[np.array] dict): input images
+            sample (string:[np.ndarray] dict): input images
                     
         Returns:
-            (string:np.array dict): output images
+            (string:np.ndarray dict): output images
         """   
 
         # Get input dictionary values
@@ -1096,5 +1081,45 @@ class Uncrop(object):
 
         return {
             list(sample.keys())[iV]: prediction[iV] 
+            for iV in range(len(values))
+        }
+
+
+class Squeeze():
+    """Squeezes a numpy array or list of numpy arrays 
+    in the 1st dimension
+    """
+
+    def __call__(self, sample):
+        """ Args:
+            sample (string:[np.ndarray] dict): input images
+                    
+        Returns:
+            (string:[np.ndarray] dict): output images
+        """   
+
+        # Get input dictionary values
+        values = [
+            value 
+            for value in sample.values()
+        ]
+
+        # Squeeze
+        if isinstance(values[0], list):
+            values = [
+                [
+                    np.squeeze(values[iV][iC], axis=1)
+                    for iC in range(len(values[0]))
+                ]
+                for iV in range(len(values))
+            ]
+        else:
+            values = [
+                np.squeeze(values[iV], axis=1) 
+                for iV in range(len(values))
+            ]
+
+        return {
+            list(sample.keys())[iV]: values[iV] 
             for iV in range(len(values))
         }

@@ -1,32 +1,72 @@
 import torch
 import torch.nn.init    as init
-from Basic_blocks       import * 
+from basic_blocks       import * 
 
 
 class Conv_residual_conv(nn.Module):
     """Controls one FusionNet residual layer"""
 
-    def __init__(self, in_dim, out_dim, act_fn):
-        """Args:
-            in_dim (int): input channel depth
-            out_dim (int): output channel depth
+    def __init__(
+        self, 
+        direction, 
+        act_fn, 
+        small_chan, 
+        large_chan,
+        act_fn_output=None
+    ):
+        """ Args:
+            direction (string): sampling direction
             act_fn (nn.Module): activation function
+            in_chan (int): input channel depth
+            out_chan (int): output channel depth
         """
     
         # Manage nn.Module inheritance
         super(Conv_residual_conv, self).__init__()
 
-        # Define class variables
-        self.in_dim = in_dim
-        self.out_dim = out_dim
+        # Define first convolutional block
+        if direction == 'encoder' or direction == 'bridge':
+            self.conv_1 = conv_block(
+                act_fn,
+                small_chan, 
+                large_chan, 
+            )
+        elif direction == 'decoder' or direction == 'out':
+            self.conv_1 = conv_block(
+                act_fn,
+                large_chan, 
+                large_chan, 
+            )
 
-        # Define residual layer
-        self.conv_1 = conv_block(self.in_dim, self.out_dim, act_fn)
-        self.conv_2 = conv_block_3(self.out_dim, self.out_dim, act_fn)
-        self.conv_3 = conv_block(self.out_dim, self.out_dim, act_fn)
+        # Define residual block
+        self.conv_2 = res_block(
+            act_fn,
+            large_chan, 
+        )
+
+        # Define last convolutional block
+        if direction == 'encoder':
+            self.conv_3 = conv_block(
+                act_fn,
+                large_chan, 
+                large_chan, 
+            )
+        elif direction == 'decoder' or direction == 'bridge':
+            self.conv_3 = conv_block(
+                act_fn,
+                large_chan, 
+                small_chan, 
+            )
+        elif direction == 'out':
+            self.conv_3 = conv_block(
+                act_fn_output,
+                large_chan, 
+                small_chan, 
+                no_batchnorm2d='yes',
+            )
 
     def forward(self, input):
-        """Args:
+        """ Args:
             input (tensor): BxCxHxW input tensor
         """
         
@@ -40,72 +80,127 @@ class Conv_residual_conv(nn.Module):
 
 
 class FusionGenerator(nn.Module):
-    """Control class generating FusionNet behaviour"""
+    """FusionNet generator"""
 
     def __init__(
         self, 
-        in_dim, 
-        out_dim, 
-        ngf
+        in_chan, 
+        out_chan, 
+        ngf,
+        spat_drop_p,
+        act_fn_encode,
+        act_fn_decode,
+        act_fn_output,
     ):
-        """Args:
-            in_dim (int): input channel depth
-            out_dim (int): output channel depth
+        """ Args:
+            in_chan (int): input channel depth
+            out_chan (int): output channel depth
             ngf (int): feature depth factor
+            spat_drop_p (float): spatial dropout chance
+            act_fn_encode (nn.Module): activation function
+                for encoder
+            act_fn_decode (nn.Module): activation function
+                for decoder            
+            act_fn_output (nn.Module): activation function
+                for output
         """
     
         # Manage nn.Module inheritance
         super(FusionGenerator, self).__init__()
         
-        # Initialize class variables
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.ngf = ngf
-
-        # Define activation function
-        act_fn_encode = nn.LeakyReLU(0.2, inplace=True)        
-        act_fn_decode = nn.ReLU()
-
         # Display status
         print('\tInitiating FusionNet...')
 
         # Define encoder
-        self.down_1 = Conv_residual_conv(self.in_dim, self.ngf, act_fn_decode)
+        self.down_1 = Conv_residual_conv(
+            'encoder',
+            act_fn_encode,
+            small_chan=in_chan, 
+            large_chan=ngf, 
+        )
         self.pool_1 = maxpool()
-        self.down_2 = Conv_residual_conv(self.ngf, self.ngf * 2, act_fn_decode)
+        self.drop_1 = spatial_dropout(spat_drop_p)
+        self.down_2 = Conv_residual_conv(
+            'encoder',
+            act_fn_encode,
+            small_chan=ngf, 
+            large_chan=ngf * 2, 
+        )
         self.pool_2 = maxpool()
-        self.down_3 = Conv_residual_conv(self.ngf * 2, self.ngf * 4, act_fn_decode)
+        self.drop_2 = spatial_dropout(spat_drop_p)
+        self.down_3 = Conv_residual_conv(
+            'encoder',
+            act_fn_encode,
+            small_chan=ngf * 2, 
+            large_chan=ngf * 4, 
+        )
         self.pool_3 = maxpool()
-        self.down_4 = Conv_residual_conv(self.ngf * 4, self.ngf * 8, act_fn_decode)
+        self.drop_3 = spatial_dropout(spat_drop_p)
+        self.down_4 = Conv_residual_conv(
+            'encoder',
+            act_fn_encode,
+            small_chan=ngf * 4, 
+            large_chan=ngf * 8, 
+        )
         self.pool_4 = maxpool()
+        self.drop_4 = spatial_dropout(spat_drop_p)
 
         # Define bridge
-        self.bridge = Conv_residual_conv(self.ngf * 8, self.ngf * 16, act_fn_decode)
+        self.bridge = Conv_residual_conv(
+            'bridge',
+            act_fn_decode,
+            small_chan=ngf * 8, 
+            large_chan=ngf * 16, 
+        )
 
         # Define decoder
-        self.deconv_1 = conv_trans_block(self.ngf * 16, self.ngf * 8, act_fn_decode)
-        self.up_1 = Conv_residual_conv(self.ngf * 8, self.ngf * 8, act_fn_decode)
-        self.deconv_2 = conv_trans_block(self.ngf * 8, self.ngf * 4, act_fn_decode)
-        self.up_2 = Conv_residual_conv(self.ngf * 4, self.ngf * 4, act_fn_decode)
-        self.deconv_3 = conv_trans_block(self.ngf * 4, self.ngf * 2, act_fn_decode)
-        self.up_3 = Conv_residual_conv(self.ngf * 2, self.ngf * 2, act_fn_decode)
-        self.deconv_4 = conv_trans_block(self.ngf * 2, self.ngf, act_fn_decode)
-        self.up_4 = Conv_residual_conv(self.ngf, self.ngf, act_fn_decode)
-
-        # Define output
-        self.out = out_block(self.ngf, self.out_dim, nn.Tanh())
+        self.drop_5 = spatial_dropout(spat_drop_p)
+        self.deconv_1 = conv_trans_block(ngf * 8)
+        self.up_1 = Conv_residual_conv(
+            'decoder',
+            act_fn_decode,
+            large_chan=ngf * 8, 
+            small_chan=ngf * 4, 
+        )
+        self.drop_6 = spatial_dropout(spat_drop_p)
+        self.deconv_2 = conv_trans_block(ngf * 4)
+        self.up_2 = Conv_residual_conv(
+            'decoder',
+            act_fn_decode,
+            large_chan=ngf * 4, 
+            small_chan=ngf * 2, 
+        )
+        self.drop_7 = spatial_dropout(spat_drop_p)
+        self.deconv_3 = conv_trans_block(ngf * 2)
+        self.up_3 = Conv_residual_conv(
+            'decoder',
+            act_fn_decode,
+            large_chan=ngf * 2, 
+            small_chan=ngf, 
+        )
+        self.drop_8 = spatial_dropout(spat_drop_p)
+        self.deconv_4 = conv_trans_block(ngf)
+        self.up_4 = Conv_residual_conv(
+            'out',
+            act_fn_decode,
+            large_chan=ngf, 
+            small_chan=out_chan, 
+            act_fn_output=act_fn_output,
+        )
 
         # Initialize weights and biases
         with torch.no_grad():
-            for m in self.modules():
+            for iM, m in enumerate(self.modules()):
                 if isinstance(m, nn.Conv2d):
                     # Choosing 'fan_out' preserves the magnitudes in the backwards pass.
                     # Backwards pass more chaotic because different celltypes, magnitudes
-                    init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu') 
-                    # init.normal_(m.weight, mean=0.0, std=0.02)
+                    if iM >= 80:
+                        init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                    else: 
+                        init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
                     init.zeros_(m.bias)
                 elif isinstance(m, nn.ConvTranspose2d):
-                    init.normal_(m.weight, mean=0.0, std=0.02)
+                    init.kaiming_uniform_(m.weight, mode='fan_out', nonlinearity='relu')
                     init.zeros_(m.bias)
                 elif isinstance(m, nn.BatchNorm2d):
                     init.normal_(m.weight, mean=1.0, std=0.02)
@@ -113,38 +208,43 @@ class FusionGenerator(nn.Module):
 
 
     def forward(self, input):
-        """Args:
+        """ Args:
             input (tensor): BxCxHxW input tensor
         """
 
         # Encode
         down_1 = self.down_1(input)
         pool_1 = self.pool_1(down_1)
-        down_2 = self.down_2(pool_1)
+        drop_1 = self.drop_1(pool_1)
+        down_2 = self.down_2(drop_1)
         pool_2 = self.pool_2(down_2)
-        down_3 = self.down_3(pool_2)
+        drop_2 = self.drop_2(pool_2)
+        down_3 = self.down_3(drop_2)
         pool_3 = self.pool_3(down_3)
-        down_4 = self.down_4(pool_3)
+        drop_3 = self.drop_3(pool_3)
+        down_4 = self.down_4(drop_3)
         pool_4 = self.pool_4(down_4)
+        drop_4 = self.drop_4(pool_4)
 
         # Bridge
-        bridge = self.bridge(pool_4)
+        bridge = self.bridge(drop_4)
 
         # Decode
-        deconv_1 = self.deconv_1(bridge)
+        drop_5 = self.drop_5(bridge)
+        deconv_1 = self.deconv_1(drop_5)
         skip_1 = (deconv_1 + down_4) / 2
         up_1 = self.up_1(skip_1)
-        deconv_2 = self.deconv_2(up_1)
+        drop_6 = self.drop_6(up_1)
+        deconv_2 = self.deconv_2(drop_6)
         skip_2 = (deconv_2 + down_3) / 2
         up_2 = self.up_2(skip_2)
-        deconv_3 = self.deconv_3(up_2)
+        drop_7 = self.drop_7(up_2)
+        deconv_3 = self.deconv_3(drop_7)
         skip_3 = (deconv_3 + down_2) / 2
         up_3 = self.up_3(skip_3)
-        deconv_4 = self.deconv_4(up_3)
+        drop_8 = self.drop_8(up_3)
+        deconv_4 = self.deconv_4(drop_8)
         skip_4 = (deconv_4 + down_1) / 2
         up_4 = self.up_4(skip_4)
 
-        # Output
-        out = self.out(up_4)
-
-        return out
+        return up_4
