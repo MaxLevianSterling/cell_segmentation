@@ -27,6 +27,7 @@ class LIVECell():
         dataset_device,
         offline_transforms=None,
         epoch_pretransforms=None,
+        epoch_posttransforms=None,
         deploy=False, 
     ):
         """Args:
@@ -41,6 +42,7 @@ class LIVECell():
         self.deploy = deploy
         self.dataset_device = dataset_device
         self.epoch_pretransforms = epoch_pretransforms
+        self.epoch_posttransforms = epoch_posttransforms
 
         # Generate folder path strings
         image_folder = path_gen([
@@ -89,15 +91,11 @@ class LIVECell():
                 self.dataset = offline_transforms(dataset)
 
         # Send to GPU
-        self.dataset = {
-            key:self.dataset[key].to(device=dataset_device)
-            for key in self.dataset.keys()
-        }
-
-    def __len__(self):
-        """Define Dataset() length"""
-
-        return len(self.image_filenames)
+        if not self.deploy:
+            self.dataset = {
+                key:self.dataset[key].to(device=dataset_device)
+                for key in self.dataset.keys()
+            }
 
     def epoch_pretransform(self):
         
@@ -107,7 +105,23 @@ class LIVECell():
         # Perform online epoch pretransforms
         with torch.no_grad():
             self.epoch_dataset = self.epoch_pretransforms(self.dataset)
-   
+    
+    def epoch_posttransform(self, predictions):
+        
+        # Reset all randomness
+        reset_seeds()
+
+        # Perform online epoch pretransforms
+        with torch.no_grad():
+            self.predictions = self.epoch_posttransforms(predictions)
+
+        return self.predictions
+
+    def __len__(self):
+        """Define Dataset() length"""
+
+        return len(self.image_filenames)
+        
     def __call__(self, batch_idxs):
         """Upon subscription or iteration
         
@@ -116,7 +130,21 @@ class LIVECell():
         """
 
         # If annotation data is relevant
-        if not self.deploy:
+        if self.deploy:
+
+            # Make image batch
+            batch = {
+                'image': [
+                    torch.index_select(
+                        self.epoch_dataset['image'][iC], 
+                        0, 
+                        batch_idxs
+                    )
+                    for iC in range(len(self.epoch_dataset['image']))
+                ]
+            }
+        
+        else:
 
             # Make image/annotation batch
             batch = {
@@ -131,10 +159,5 @@ class LIVECell():
                     batch_idxs
                 ),
             }
-  
-        else:
-
-            # Make image batch
-            pass
 
         return batch

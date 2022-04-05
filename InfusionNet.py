@@ -3,6 +3,37 @@ import torch.nn.init    as init
 from basic_blocks       import * 
 
 
+class InceptionModule(nn.Module):
+
+    def __init__(
+        self, 
+        act_fn,
+        in_chan,
+        out_chan,
+    ):
+
+        # Manage nn.Module inheritance
+        super(InceptionModule, self).__init__()
+
+        self.inc_one = inception_one(in_chan, out_chan)
+        self.inc_three = inception_three(in_chan, out_chan)
+        self.inc_five = inception_five(in_chan, out_chan)
+        self.act_batch = act_batch(act_fn, out_chan)
+
+    def forward(self, input):
+
+        inc_one = self.inc_one(input)
+        inc_three = self.inc_three(input)
+        inc_five = self.inc_five(input)
+        inc = torch.cat(
+            (inc_one, inc_three, inc_five), 
+            dim=1
+        )
+        inc_out = self.act_batch(inc)
+
+        return inc_out
+
+
 class Conv_residual_conv(nn.Module):
     """Controls one FusionNet residual layer"""
 
@@ -26,44 +57,48 @@ class Conv_residual_conv(nn.Module):
 
         # Define first convolutional block
         if direction == 'encoder' or direction == 'bridge':
-            self.conv_1 = conv_block(
+            self.conv_in = InceptionModule(
                 act_fn,
                 small_chan, 
                 large_chan, 
             )
         elif direction == 'decoder' or direction == 'out':
-            self.conv_1 = conv_block(
+            self.conv_in = InceptionModule(
                 act_fn,
                 large_chan, 
                 large_chan, 
             )
+        elif direction == 'in':
+            self.conv_in = conv_block(
+                act_fn,
+                small_chan, 
+                large_chan, 
+            )
 
         # Define residual block
-        self.conv_2 = res_block(
-            act_fn,
-            large_chan, 
-        )
+        self.res_1 = InceptionModule(act_fn, large_chan, large_chan)
+        self.res_2 = InceptionModule(act_fn, large_chan, large_chan)
+        self.res_3 = InceptionModule(act_fn, large_chan, large_chan)
 
         # Define last convolutional block
-        if direction == 'encoder':
-            self.conv_3 = conv_block(
+        if direction == 'encoder' or direction == 'in':
+            self.conv_out = InceptionModule(
                 act_fn,
                 large_chan, 
                 large_chan, 
             )
         elif direction == 'decoder' or direction == 'bridge':
-            self.conv_3 = conv_block(
+            self.conv_out = InceptionModule(
                 act_fn,
                 large_chan, 
                 small_chan, 
             )
         elif direction == 'out':
-            self.conv_3 = conv_block(
+            self.conv_out = conv_block(
                 act_fn_output,
                 large_chan, 
                 small_chan, 
                 no_batchnorm2d='yes',
-                no_act_fn=''
             )
 
     def forward(self, input):
@@ -72,16 +107,18 @@ class Conv_residual_conv(nn.Module):
         """
         
         # Calculate residual layer output
-        conv_1 = self.conv_1(input)
-        conv_2 = self.conv_2(conv_1)
-        res = (conv_1 + conv_2) / 2
-        conv_3 = self.conv_3(res)
+        conv_in = self.conv_in(input)
+        res_1 = self.res_1(conv_in)
+        res_2 = self.res_2(res_1)
+        res_3 = self.res_3(res_2)
+        res = (conv_in + res_3) / 2
+        conv_out = self.conv_out(res)
         
-        return conv_3
+        return conv_out
 
 
-class FusionGenerator(nn.Module):
-    """FusionNet generator"""
+class InfusionGenerator(nn.Module):
+    """InfusionNet generator"""
 
     def __init__(
         self, 
@@ -107,14 +144,14 @@ class FusionGenerator(nn.Module):
         """
     
         # Manage nn.Module inheritance
-        super(FusionGenerator, self).__init__()
+        super(InfusionGenerator, self).__init__()
         
         # Display status
-        print('\tInitiating FusionNet...')
+        print('\tInitiating InfusionNet...')
 
         # Define encoder
         self.down_1 = Conv_residual_conv(
-            'encoder',
+            'in',
             act_fn_encode,
             small_chan=in_chan, 
             large_chan=ngf, 
@@ -195,7 +232,10 @@ class FusionGenerator(nn.Module):
                 if isinstance(m, nn.Conv2d):
                     # Choosing 'fan_out' preserves the magnitudes in the backwards pass.
                     # Backwards pass more chaotic because different celltypes, magnitudes
-                    init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+                    if iM >= 229:
+                        init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                    else: 
+                        init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
                     init.zeros_(m.bias)
                 elif isinstance(m, nn.ConvTranspose2d):
                     init.kaiming_uniform_(m.weight, mode='fan_out', nonlinearity='relu')

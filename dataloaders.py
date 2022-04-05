@@ -17,6 +17,8 @@ class GPU_dataloader():
     ):
         """ Args:
             dataset (Dataset): dataset from which to load
+            dataset_device (string): device to access 
+                dataset from
             batch_size (int): how many samples per batch 
                 to load
             shuffle (bool): whether to reshuffle data every 

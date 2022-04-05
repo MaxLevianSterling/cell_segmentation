@@ -13,11 +13,11 @@ class Compose():
     """ Composes several transforms together
    
     Warning:
-            PyTorch random seed is automatically reset
-                when a worker is initialized, but other
-                random libraries not. Use custom 
-                worker_init_fn or other function to 
-                achieve this per epoch or otherwise.
+        PyTorch random seed is automatically reset
+            when a worker is initialized, but other
+            random libraries not. Use custom 
+            worker_init_fn or other function to 
+            achieve this per epoch or otherwise.
 
     Example:
         epoch_pretransforms=Compose([
@@ -513,24 +513,30 @@ class ToNormal():
     """Normalizes input according to new parameters
     for the entire set"""
 
-    def __init__(self, items, new_mean, new_std):
+    def __init__(self, items, new_mean, new_std, old_mean, old_std):
         """ Args:
             items (list): list of sample value numbers 
                 to convert to binary
             new_mean (float): the new set mean
             new_std (float): the new set standard deviation
+            old_mean (float): the old set mean
+            old_std (float): the old set standard deviation
         """    
 
         assert isinstance(items, list)
         self.items = items
 
-        assert isinstance(new_mean, float)
-        assert new_mean > 0 and new_mean < 1
+        assert isinstance(new_mean, (int, float))
         self.new_mean = new_mean
 
-        assert isinstance(new_std, float)
-        assert new_std > 0 and new_std < 1
+        assert isinstance(new_std, (int, float))
         self.new_std = new_std
+
+        assert isinstance(old_mean, (int, float))
+        self.old_mean = old_mean
+
+        assert isinstance(old_std, (int, float))
+        self.old_std = old_std
         
     def __call__(self, sample):
         """ Args:
@@ -548,26 +554,16 @@ class ToNormal():
             for value in sample.values()
         ]
         
-        # Get old parameters
-        old_mean = torch.mean(values[0])
-        old_std = torch.std(values[0])
-
         # Transform to new normal distribution
         values = [
-            ((values[iV] - old_mean) / old_std) \
+            ((values[iV] - self.old_mean) / self.old_std) \
                 * self.new_std + self.new_mean
             if iV in self.items
             else values[iV]
             for iV in range(len(values)) 
         ] 
 
-        # Clip
-        values = [
-            torch.clip(values[iV], 0, 1)
-            for iV in range(len(values)) 
-        ] 
-
-        # Plotting utility
+        # # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/normal_image.png'
@@ -641,7 +637,10 @@ class ToBinary():
             ]
         elif torch.is_tensor(values[0]) \
                 and len(values[0].shape) == 4:
-            current_device = f'cuda:{values[0].get_device()}'
+            if values[0].get_device() >= 0:
+                current_device = f'cuda:{values[0].get_device()}'
+            else:
+                current_device = 'cpu'
             one = torch.ones(1).to(
                 device=current_device, 
                 dtype=torch.uint8
@@ -731,7 +730,6 @@ class Noise():
                         size=values[iV].shape
                     ).to(device=current_device, dtype=torch.float)
                     values[iV] = values[iV] + noise
-                    values[iV] = torch.clip(values[iV], 0, 1) 
 
         # Plotting utility
         # v_utils.save_image(
@@ -754,7 +752,7 @@ class FullCrop():
     comprising the entire array
     """
 
-    def __init__(self, input_size, output_size):
+    def __init__(self, input_size, output_size, overlap):
         """ Args:
             input_size (int/tuple): input image sizes
             output_size (int/tuple): output image size
@@ -773,6 +771,13 @@ class FullCrop():
         else:
             assert len(output_size) == 2
             self.output_size = output_size
+       
+        assert isinstance(overlap, (int, tuple))
+        if isinstance(overlap, int):
+            self.overlap = (overlap, overlap)
+        else:
+            assert len(output_size) == 2
+            self.overlap = overlap
 
     def __call__(self, sample):
         """ Args:
@@ -789,20 +794,22 @@ class FullCrop():
         ]
 
         # Determine how many crops needed for each axis
-        n_crops_h = ceil(self.input_size[0] / self.output_size[0])
-        n_crops_w = ceil(self.input_size[1] / self.output_size[1])
+        n_crops_h = ceil(
+            self.overlap[0] * (self.input_size[0] - self.output_size[0]
+        ) / self.output_size[0]) + 1
+        n_crops_w = ceil(
+            self.overlap[1] * (self.input_size[1] - self.output_size[1]
+        ) / self.output_size[1]) + 1
 
         # Determine cropping positions
         tops = [
-            iCh*self.output_size[0] 
-            for iCh in range(n_crops_h-1)
+            iCh * round((self.input_size[0]-self.output_size[0]) / (n_crops_h-1)) 
+            for iCh in range(n_crops_h)
         ]
-        tops.append(self.input_size[0]-self.output_size[0])
         lefts = [
-            iCw*self.output_size[1] 
-            for iCw in range(n_crops_w-1)
+            iCw * round((self.input_size[1]-self.output_size[1]) / (n_crops_w-1)) 
+            for iCw in range(n_crops_w)
         ]
-        lefts.append(self.input_size[1]-self.output_size[1])
        
         # Crop
         cropped_samples = [[] for value in values]
@@ -880,6 +887,12 @@ class StackOrient():
                         np.rot90(mirrored_stack, axes=(1, 2))
                     ))
 
+        # # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/oriented_image0.png'
+        # )
+
         return {
             list(sample.keys())[iV]: values[iV] 
             for iV in range(len(values))
@@ -916,14 +929,14 @@ class StackReorient():
                         [2, 3]
                     )
                     values[iV][iC] = torch.cat((
-                        values[iV][iC][:, 0, :, :],
-                        torch.flip(values[iV][iC][:, 1, :, :], [2]),
-                        torch.flip(values[iV][iC][:, 2, :, :], [3]),
-                        torch.flip(values[iV][iC][:, 3, :, :], [2, 3]),
-                        values[iV][iC][:, 4, :, :],
-                        torch.flip(values[iV][iC][:, 5, :, :], [2]),
-                        torch.flip(values[iV][iC][:, 6, :, :], [3]),
-                        torch.flip(values[iV][iC][:, 7, :, :], [2, 3])
+                        values[iV][iC][:, 0:1, :, :],
+                        torch.flip(values[iV][iC][:, 1:2, :, :], [2]),
+                        torch.flip(values[iV][iC][:, 2:3, :, :], [3]),
+                        torch.flip(values[iV][iC][:, 3:4, :, :], [2, 3]),
+                        values[iV][iC][:, 4:5, :, :],
+                        torch.flip(values[iV][iC][:, 5:6, :, :], [2]),
+                        torch.flip(values[iV][iC][:, 6:7, :, :], [3]),
+                        torch.flip(values[iV][iC][:, 7:8, :, :], [2, 3])
                     ), dim=1)
                 else:
                     values[iV][iC][4:, :, :] = np.rot90(
@@ -941,6 +954,40 @@ class StackReorient():
                         np.flip(values[iV][iC][6, :, :], 1),
                         np.flip(values[iV][iC][7, :, :], (0, 1))
                     ), axis=0)
+        
+        # # Plotting utility
+        # v_utils.save_image(
+        #     values[0][5][10,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image0.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,1:2,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image1.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,2:3,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image2.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,3:4,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image3.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,4:5,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image4.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,5:6,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image5.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,6:7,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image6.png'
+        # )
+        # v_utils.save_image(
+        #     values[0][5][10,7:8,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image7.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -970,13 +1017,19 @@ class StackMean():
         # Average
         values = [
             [   
-                torch.mean(values[iV][iC], dim=1)
+                torch.mean(values[iV][iC], dim=1, keepdim=True)
                 if len(values[iV][iC].shape) == 4
                 else np.mean(values[iV][iC], axis=0)
                 for iC in range(len(values[0]))
             ]
             for iV in range(len(values))
         ]
+
+        # # Plotting utility
+        # v_utils.save_image(
+        #     values[0][5][10,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image0.png'
+        # )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -990,7 +1043,7 @@ class Uncrop():
     original array
     """
 
-    def __init__(self, input_size, output_size):
+    def __init__(self, input_size, output_size, overlap):
         """ Args:
             input_size (int/tuple): input image sizes
             output_size (int/tuple): output image size
@@ -1009,6 +1062,13 @@ class Uncrop():
         else:
             assert len(output_size) == 2
             self.output_size = output_size
+       
+        assert isinstance(overlap, (int, tuple))
+        if isinstance(overlap, int):
+            self.overlap = (overlap, overlap)
+        else:
+            assert len(output_size) == 2
+            self.overlap = overlap
 
     def __call__(self, sample):
         """ Args:
@@ -1025,59 +1085,136 @@ class Uncrop():
         ]
 
         # Determine how many crops needed for each axis
-        n_crops_h = ceil(self.output_size[0] / self.input_size[0])
-        n_crops_w = ceil(self.output_size[1] / self.input_size[1])
+        n_crops_h = ceil(
+            self.overlap[0] * (self.output_size[0] - self.input_size[0]
+        ) / self.input_size[0]) + 1
+        n_crops_w = ceil(
+            self.overlap[1] * (self.output_size[1] - self.input_size[1]
+        ) / self.input_size[1]) + 1
 
         # Determine cropping positions
         tops = [
-            iCh*self.input_size[0] 
-            for iCh in range(n_crops_h-1)
+            iCh * round((self.output_size[0]-self.input_size[0]) / (n_crops_h-1)) 
+            for iCh in range(n_crops_h)
         ]
-        tops.append(self.output_size[0]-self.input_size[0])
         lefts = [
-            iCw*self.input_size[1] 
-            for iCw in range(n_crops_w-1)
-        ]
-        lefts.append(self.output_size[1]-self.input_size[1])
-       
-        # Initialize output array
-        prediction = [
-            np.zeros(
-                (
-                    n_crops_h*n_crops_w, 
-                    self.output_size[0], 
-                    self.output_size[1]
-                ), 
-                dtype=float
-            )
-            for iV in range(len(values))
+            iCw * round((self.output_size[1]-self.input_size[1]) / (n_crops_w-1)) 
+            for iCw in range(n_crops_w)
         ]
 
-        # Pad crops with zeros
-        for iV in range(len(values)):
-            for iT, top in enumerate(tops):
-                for iL, left in enumerate(lefts):
-                    prediction[iV][
-                        2*iT + iL,
-                        top: top + self.input_size[0],
-                        left: left + self.input_size[1]
-                    ] = values[iV][2*iT + iL] 
-        
-        # Transform zero to NaN
-        prediction = [
-            np.where(
-                prediction[iV] == 0,
-                np.nan,
-                prediction[iV]
-            )
-            for iV in range(len(values))
-        ]
+        if isinstance(values[0], list) \
+                and isinstance(values[0][0], np.ndarray) \
+                and len(values[0][0].shape) == 3:
 
-        # Merge
-        prediction = [
-            np.nanmean(prediction[iV], axis=0)
-            for iV in range(len(values))
-        ]
+            # Initialize output array
+            prediction = [
+                np.zeros(
+                    (
+                        n_crops_h*n_crops_w, 
+                        self.output_size[0], 
+                        self.output_size[1]
+                    ), 
+                    dtype=float
+                )
+                for iV in range(len(values))
+            ]
+
+            # Pad crops with zeros
+            for iV in range(len(values)):
+                for iT, top in enumerate(tops):
+                    for iL, left in enumerate(lefts):
+                        prediction[iV][
+                            2*iT + iL,
+                            top: top + self.input_size[0],
+                            left: left + self.input_size[1]
+                        ] = values[iV][2*iT + iL] 
+            
+            # Transform zero to NaN
+            prediction = [
+                np.where(
+                    prediction[iV] == 0,
+                    np.nan,
+                    prediction[iV]
+                )
+                for iV in range(len(values))
+            ]
+
+            # Merge
+            prediction = [
+                np.nanmean(prediction[iV], axis=0)
+                for iV in range(len(values))
+            ]
+
+        elif isinstance(values[0], list) \
+                and torch.is_tensor(values[0][0]) \
+                and len(values[0][0].shape) == 4:
+    
+            # Initialize output array
+            prediction = [
+                -1 * torch.ones(
+                    (
+                        n_crops_h*n_crops_w,
+                        values[iV][0].shape[0], 
+                        1,
+                        self.output_size[0], 
+                        self.output_size[1],
+                    ), 
+                    dtype=torch.float
+                )
+                for iV in range(len(values))
+            ]
+
+            # Pad crops with zeros
+            for iV in range(len(values)):
+                for iT, top in enumerate(tops):
+                    for iL, left in enumerate(lefts):
+                        prediction[iV][
+                            len(lefts)*iT+iL : len(lefts)*iT+iL+1,
+                            :,
+                            :,
+                            top: top + self.input_size[0],
+                            left: left + self.input_size[1],
+                        ] = values[iV][len(lefts)*iT+iL] 
+            
+            # Transform zero to NaN
+            nan = torch.zeros(1)
+            nan[nan==0] = float('nan')
+            prediction = [
+                torch.where(
+                    prediction[iV] == float(-1),
+                    nan,
+                    prediction[iV]
+                )
+                for iV in range(len(values))
+            ]
+
+            # Merge
+            prediction = [
+                torch.nanmean(prediction[iV], axis=0)
+                for iV in range(len(values))
+            ]
+
+        # # Plotting utility
+        # v_utils.save_image(
+        #     prediction[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image0.png'
+        # )
+        # v_utils.save_image(
+        #     prediction[0][1,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image1.png'
+        # )
+        # v_utils.save_image(
+        #     prediction[0][2,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image2.png'
+        # )
+        # v_utils.save_image(
+        #     prediction[0][3,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image3.png'
+        # )
+        # v_utils.save_image(
+        #     prediction[0][4,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image4s.png'
+        # )
 
         return {
             list(sample.keys())[iV]: prediction[iV] 

@@ -313,7 +313,7 @@ def stack_orient(dir, square=False):
 def preprocess(
     path = '/mnt/sdg/maxs',
     data_set = 'LIVECell',
-    data_subset = 'extra',
+    data_subset = 'val_2',
     orient = False
 ):
     """Preprocesses LIVECell image and annotation data

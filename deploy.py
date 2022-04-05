@@ -7,6 +7,7 @@ import numpy                    as np
 from torch.autograd             import Variable
 from FusionNet                  import * 
 from datasets                   import LIVECell
+from dataloaders                import GPU_dataloader 
 from image_transforms           import Compose
 from image_transforms           import FullCrop
 from image_transforms           import StackOrient
@@ -21,7 +22,6 @@ from image_transforms           import Uncrop
 from utils                      import path_gen
 from utils                      import get_gpu_memory
 from utils                      import gpu_every_sec
-from utils                      import worker_init_fn
 from math                       import ceil
 from GPUtil                     import getAvailable
 from inspect                    import getargspec
@@ -38,27 +38,33 @@ def deploy(
 
     # GPU variables
     gpu_device_ids      = 'all_available',
-    reserved_gpus       = [0, 1, 6, 7],
+    reserved_gpus       = [4, 6, 7],
+
+    # Training variables
+    load_chkpt          = 20000,
+    amp                 = True,
 
     # Model variables
-    model               = 'test_w_pers_workers',
-    load_chkpt          = 0,
-    amp                 = True,
+    model               = 'base_128',
+    in_chan             = 1,
+    out_chan            = 1,
+    ngf                 = 64,
+    spat_drop_p         = .05,
+    act_fn_encode       = nn.LeakyReLU(0.2),
+    act_fn_decode       = nn.ReLU(),
+    act_fn_output       = nn.Tanh(),
 
     # Transform variables
     crop_size           = 128,
     orig_size           = (520, 704),
+    overlap             = 3,
     new_mean            = .5,
     new_std             = .15,
-    tobinary            = .7,
+    tobinary            = .3,
 
     # DataLoader variables
     batch_size          = 128,
-    shuffle             = True,
-    num_workers         = 'ratio',
-    pin_memory          = True,
-    persistent_workers  = True,
-    prefetch_factor     = 2,
+    shuffle             = False,
     drop_last           = False,
 
     # Verbosity variables
@@ -182,9 +188,9 @@ def deploy(
         if gpu not in reserved_gpus
     ]
 
-    # Assign devices if CUDA is available
+    # Assign devices 
+    dataset_device = 'cpu' 
     if torch.cuda.is_available(): 
-        dataset_device = f'cuda:{gpu_device_ids[-1]}' 
         nn_handler_device = f'cuda:{gpu_device_ids[0]}' 
         print(f'\tUsing GPU {gpu_device_ids[-1]} as online dataset storage...')
         print(f'\tUsing GPU {gpu_device_ids[0]} as handler for GPUs {gpu_device_ids}...')
@@ -205,128 +211,137 @@ def deploy(
             data_subset=data_subset,
             dataset_device=dataset_device,
             deploy=True,
-            offline_transform=Compose([
+            offline_transforms=Compose([
                 ToUnitInterval(),
                 ToTensor(),
                 ToNormal(items=[0], new_mean=new_mean, new_std=new_std)
             ]),
-            online_epoch_pretransform=Compose([
-                FullCrop(input_size=orig_size, output_size=crop_size),
+            epoch_pretransforms=Compose([
+                FullCrop(input_size=orig_size, output_size=crop_size, overlap=overlap),
                 StackOrient()
             ]),
-            online_epoch_posttransform=Compose([
+            epoch_posttransforms=Compose([
                 StackReorient(),
                 StackMean(),
-                Uncrop(input_size=crop_size, output_size=orig_size),
+                Uncrop(input_size=crop_size, output_size=orig_size, overlap=overlap),
+                ToBinary(cutoff=tobinary, items=[0]),
                 Squeeze(),
-                ToBinary(cutoff=tobinary, items=[0])
             ])
         )
 
-        # Reset number of workers if necessary
-        if num_workers == 'max':
-            num_workers = len(gpu_device_ids)
-        elif num_workers == 'ratio':
-            num_workers = min([
-                ceil(len(LIVECell_deploy_dset)/batch_size), 
-                len(gpu_device_ids)
-            ])
-
-        # Initiate standard DataLoader() instance
-        dataloader = data.DataLoader(
+        #Initiate custom data loader
+        dataloader = GPU_dataloader(
             LIVECell_deploy_dset,
+            dataset_device=dataset_device,
             batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-            prefetch_factor=prefetch_factor
+            shuffle=shuffle,
+            drop_last=drop_last,
         )
         
         # Initiate FusionNet
-        FusionNet = FusionGenerator(1,1,64).to(device=nn_handler_device, dtype=torch.float)
-    
+        FusionNet = nn.DataParallel(
+            FusionGenerator(
+                in_chan, 
+                out_chan, 
+                ngf,
+                spat_drop_p,
+                act_fn_encode,
+                act_fn_decode,
+                act_fn_output
+            ).to(device=nn_handler_device), 
+            device_ids=gpu_device_ids,
+            output_device=nn_handler_device,
+        )
+
         # Load trained network
-        model_path = f'{models_folder}FusionNet_checkpoint{load_chkpt}.tar'
-        chkpt = torch.load(model_path)
-        FusionNet.load_state_dict(chkpt['model_module_state_dict'])
+        chkpt_path = f'{models_folder}FusionNet_checkpoint{load_chkpt}.tar'
+        chkpt = torch.load(chkpt_path, map_location=nn_handler_device)
+        load_check = FusionNet.module.load_state_dict(chkpt['model_module_state_dict'])
+        if not load_check:
+            raise RuntimeError('\n\tNot all module parameters loaded correctly')
         print(f'\tDeploying checkpoint of epoch {load_chkpt} of model {model} trained on {model_data_set}/{model_data_subset}...')
         print(f'\tUsing network to segment cells in images from {data_set}/{data_subset}...')       
         print('\n\t', f'{print_sep}' * 71, '\n', sep='')
 
-        # Wrap model for parallel GPU usage
-        FusionNet = nn.DataParallel(
-            FusionNet, 
-            device_ids=gpu_device_ids
-        )
-
         # Make sure evaluation mode is enabled
         FusionNet.eval()
- 
-        # Initialize batch loss log
-        batch_loss_log = []
+    
+        # Initialize local variables
+        n_crops_h = ceil(
+            overlap * (orig_size[0] - crop_size
+        ) / crop_size) + 1
+        n_crops_w = ceil(
+            overlap * (orig_size[1] - crop_size
+        ) / crop_size) + 1
+        n_crops = n_crops_h * n_crops_w 
+        predictions = [
+            torch.zeros(
+                (len(LIVECell_deploy_dset), 8, crop_size, crop_size), 
+                dtype=torch.float, 
+                device=dataset_device
+            )
+            for iC in range(n_crops)
+        ]
 
         # Perform online epoch image transformations
-        LIVECell.epoch_transform(LIVECell_deploy_dset)
+        LIVECell.epoch_pretransform(LIVECell_deploy_dset)
 
         # Deploy FusionNet
         for iB, batch in enumerate(dataloader):
             
-            # Initialize local variables
-            predictions = []
-            current_batch_size = list(batch['image'][0].size())[0]
-        
+            # Initialize batch variables
+            current_batch_len = list(batch['image'][0].size())[0]
+
             # Feed image set through FusionNet
-            for iC in range(len(batch['image'])):
-                predictions.append(
-                    torch.zeros(
-                        (len(LIVECell_deploy_dset), 8, crop_size, crop_size), 
-                        dtype=torch.float, 
-                        device=nn_handler_device
-                    )
-                )
+            for iC in range(n_crops):
                 for iO in range(8):
                     if amp:
                         with torch.cuda.amp.autocast():
-                            x = Variable(batch['image'][iC][:,iO:iO+1,:,:]).to(device=nn_handler_device, dtype=torch.float)
+                            x = Variable(batch['image'][iC][:,iO:iO+1,:,:]).to(device=nn_handler_device)
                             y = FusionNet(x)
                     else:
-                        x = Variable(batch['image'][iC][:,iO:iO+1,:,:]).to(device=nn_handler_device, dtype=torch.float)
-                        a = x[0]
-                        v_utils.save_image(
-                            x[0].detach().to('cpu').type(torch.float32),
-                            f'{results_folder}FusionNet_image_checkpoint{load_chkpt}.png'
-                        )
+                        x = Variable(batch['image'][iC][:,iO:iO+1,:,:]).to(device=nn_handler_device)
                         y = FusionNet(x)
-                        b = y[0]
-                        v_utils.save_image(
-                            y[0].detach().to('cpu').type(torch.float32),
-                            f'{results_folder}FusionNet_pred_checkpoint{load_chkpt}.png'
-                        )
-            
+   
+                    # v_utils.save_image(
+                    #     x[0].detach().to('cpu').type(torch.float32),
+                    #     f'{results_folder}FusionNet_image_checkpoint{load_chkpt}.png'
+                    # )
+                    # v_utils.save_image(
+                    #     y[0].detach().to('cpu').type(torch.float32),
+                    #     f'{results_folder}FusionNet_pred_checkpoint{load_chkpt}.png'
+                    # )
+
                     predictions[iC][
-                        iB*batch_size : iB*batch_size+current_batch_size,
+                        iB*batch_size : iB*batch_size+current_batch_len,
                         iO:iO+1,
                         :,
                         :
-                    ] = y
+                    ] = y.detach().to('cpu')
             
-            # Display progress
-            batch_ratio = (iB) / (len(dataloader) - 1)
-            sys.stdout.write('\r')
-            sys.stdout.write(
-                "\tImages: [{:<{}}] {:.0f}%".format(
-                    "=" * int(20*batch_ratio), 20, 100*batch_ratio,
+                # Display progress
+                batch_ratio = (iB + 1) / (len(dataloader))
+                crop_ratio = (iC + 1) / (n_crops)
+                sys.stdout.write('\r')
+                sys.stdout.write(
+                    "\tBatches: [{:<{}}] {:.0f}%; Crops: [{:<{}}] {:.0f}%    ".format(
+                        "=" * int(20*batch_ratio), 20, 100*batch_ratio,
+                        "=" * int(20*crop_ratio), 20, 100*crop_ratio,
+                    )
                 )
-            )
-            sys.stdout.flush()
-        
+                sys.stdout.flush()
+                
         # Prediction boosting with uncropping
-        predictions = LIVECell.epoch_transform(LIVECell_deploy_dset, predictions)
+        predictions = LIVECell.epoch_posttransform(
+            LIVECell_deploy_dset, 
+            {'image': predictions}
+        )
 
         # Save predictions in results folder
-        predictions = np.stack(predictions.detach().to('cpu').numpy(), axis=0)
-        np.save(f'{results_folder}FusionNet_checkpoint{load_chkpt}_prediction_array.npy', predictions)
+        np.save(
+            f'{results_folder}FusionNet_checkpoint{load_chkpt}_predictions.npy', 
+            predictions['image']
+        )
 
 
 # Run deploy() if deploy.py is run directly

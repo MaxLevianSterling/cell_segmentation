@@ -1,7 +1,65 @@
 import torch.nn as nn
 
 
-def conv_block(act_fn, in_chan, out_chan, no_batchnorm2d=''):
+def inception_one(in_chan, out_chan):
+    block = nn.Sequential(
+        nn.Conv2d(
+            in_chan, 
+            int(out_chan/4), 
+            kernel_size=1, 
+            stride=1, 
+            padding=0,
+        ),
+    )
+
+    return block
+
+
+def inception_three(in_chan, out_chan):
+    block = nn.Sequential(
+        # nn.Conv2d(
+        #     in_chan, 
+        #     int(in_chan/4), 
+        #     kernel_size=1, 
+        #     stride=1, 
+        #     padding=0,
+        # ),
+        nn.Conv2d(
+            int(in_chan), 
+            int(out_chan/2), 
+            kernel_size=3, 
+            stride=1, 
+            padding=1,
+            padding_mode='reflect',
+        ),
+    )
+    
+    return block
+
+
+def inception_five(in_chan, out_chan):
+    block = nn.Sequential(
+        # nn.Conv2d(
+        #     in_chan, 
+        #     int(in_chan/4), 
+        #     kernel_size=1, 
+        #     stride=1, 
+        #     padding=0,
+        # ),
+        nn.Conv2d(
+            int(in_chan), 
+            int(out_chan/4), 
+            kernel_size=5, 
+            stride=1, 
+            padding=2,
+            padding_mode='reflect',
+        ),
+    )
+
+    return block
+
+
+def act_batch(act_fn, out_chan):
     """ Creates the basic FusionNet convolution 
         block
     
@@ -14,7 +72,28 @@ def conv_block(act_fn, in_chan, out_chan, no_batchnorm2d=''):
         (nn.Sequential()) Basic convolution block
     """
 
-    if no_batchnorm2d:
+    block = nn.Sequential(
+        act_fn,
+        nn.BatchNorm2d(out_chan),
+    )
+
+    return block
+    
+    
+def conv_block(act_fn, in_chan, out_chan, no_batchnorm2d='', no_act_fn=''):
+    """ Creates the basic FusionNet convolution 
+        block
+    
+    Args:
+        act_fn (nn.Module): activation function
+        in_chan (int): input channel depth
+        out_chan (int): output channel depth
+ 
+    Returns:
+        (nn.Sequential()) Basic convolution block
+    """
+
+    if no_batchnorm2d and no_act_fn:
         block = nn.Sequential(
             nn.Conv2d(
                 in_chan, 
@@ -23,6 +102,29 @@ def conv_block(act_fn, in_chan, out_chan, no_batchnorm2d=''):
                 stride=1, 
                 padding=1,
                 padding_mode='reflect'
+            )
+        )
+    elif no_act_fn:
+        block = nn.Sequential(
+            nn.Conv2d(
+                in_chan, 
+                out_chan, 
+                kernel_size=3, 
+                stride=1, 
+                padding=1,
+                padding_mode='reflect',
+            ),
+            nn.BatchNorm2d(out_chan),
+        )
+    elif no_batchnorm2d:
+        block = nn.Sequential(
+            nn.Conv2d(
+                in_chan, 
+                out_chan, 
+                kernel_size=3, 
+                stride=1, 
+                padding=1,
+                padding_mode='reflect',
             ),
             act_fn,
         )
@@ -34,7 +136,7 @@ def conv_block(act_fn, in_chan, out_chan, no_batchnorm2d=''):
                 kernel_size=3, 
                 stride=1, 
                 padding=1,
-                padding_mode='reflect'
+                padding_mode='reflect',
             ),
             act_fn,
             nn.BatchNorm2d(out_chan),
@@ -118,5 +220,5 @@ def conv_trans_block(chan):
             output_padding=1
         ),
     )
-
+    
     return block

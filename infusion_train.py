@@ -5,7 +5,7 @@ import torch.utils.data         as data
 import torchvision.utils        as v_utils
 import numpy                    as np
 from torch.autograd             import Variable
-from FusionNet                  import *
+from InfusionNet                import *
 from datasets                   import LIVECell
 from dataloaders                import GPU_dataloader 
 from image_transforms           import Compose
@@ -32,81 +32,73 @@ def train(
 
     # Data variables
     path                = '/mnt/sdg/maxs',
-    train_data_set      = 'LIVECell',
-    train_data_subset   = 'trial',    
-    val_data_set        = 'LIVECell',
-    val_data_subset     = 'val_2',
+    data_set            = 'LIVECell',
+    data_subset         = 'trial',
 
     # GPU variables
     gpu_device_ids      = 'all_available',
-    reserved_gpus       = [0, 1, 6, 7],
+    reserved_gpus       = [0, 6, 7],
 
     # Training variables
     load_chkpt          = 0,
-    n_epochs            = 100000,
+    n_epochs            = 20000,
     save_chkpt_interval = 1000,
     save_image_interval = 250,
-    save_images         = 5,
     amp                 = True,
 
-    # Validation variables
-    validation_interval = 250,
-    val_dataset_device  = 'cpu',
-
     # Model variables
-    model               = 'fusion_128_base_new',
+    model               = 'infusion_128',
     in_chan             = 1,
     out_chan            = 1,
     ngf                 = 64,
     spat_drop_p         = .05,
-    act_fn_encode       = nn.LeakyReLU(negative_slope=.1),
-    act_fn_decode       = nn.LeakyReLU(negative_slope=.1),
-    act_fn_output       = nn.LeakyReLU(negative_slope=.1),
+    act_fn_encode       = nn.LeakyReLU(0.2),
+    act_fn_decode       = nn.ReLU(),
+    act_fn_output       = nn.Tanh(),
 
     # Transform variables
     crop_size           = 128,
     orig_size           = (520, 704),
     localdeform         = [6, 4],
-    new_mean            = 0.,
-    new_std             = 1.,
-    tobinary            = .5,
+    new_mean            = .5,
+    new_std             = .15,
+    tobinary            = .7,
     noise               = .05,
 
     # DataLoader variables
-    batch_size          = 32,
+    batch_size          = 128,
     shuffle             = True,
     drop_last           = True,
 
     # Optimizer and scheduler variables
-    lr                  = .2,
-    weight_decay        = 0.,
-    #gamma               = 0.99993068768,
-    gamma               = 1,
-    sched_step_size     = 25,
+    lr                  = .002,
+    weight_decay        = .0001,
+    gamma               = 0.99993068768,
+    sched_step_size     = 1,
 
     # Verbosity variables
     print_sep           = '$',
 ):
-    """Trains a FusionNet-type neural network
+    """Trains a InfusionNet-type neural network
 
     Note:
         Image data must be grayscale
         Required folder structure:
             <path>/
                 data/
-                    <train_data_set>/
+                    <data_set>/
                         images/
-                            <train_data_subset>/<.tif files>
+                            <data_subset>/<.tif files>
                         annotations/
-                            <train_data_subset>/<.tif files>
+                            <data_subset>/<.tif files>
                             (<.json file>)
                 models/
                 results/
 
     Args:
         path (string): path to training data folder
-        train_data_set (string): training data set
-        train_data_subset (string): training data subset
+        data_set (string): training data set
+        data_subset (string): training data subset
 
         gpu_device_ids (list of ints): gpu device ids used
             (default = <all available GPUs>)
@@ -166,7 +158,7 @@ def train(
             character
 
     Returns:
-        FusionNet checkpoints in the models subfolder along with 
+        InfusionNet checkpoints in the models subfolder along with 
             a log of the loss over epochs and the training 
             parameters
         (Optional) Example network image outputs at various 
@@ -174,7 +166,7 @@ def train(
 
     Raises:
         RuntimeError: At least one GPU must be available to 
-            train FusionNet
+            train InfusionNet
     """
 
     # Being beautiful is not a crime
@@ -184,15 +176,15 @@ def train(
     models_folder = path_gen([
         path,
         'models',
-        train_data_set,
-        train_data_subset,
+        data_set,
+        data_subset,
         model
     ])
     results_folder = path_gen([
         path,
         'results',
-        train_data_set,
-        train_data_subset,
+        data_set,
+        data_subset,
         model,
         'training'
     ])
@@ -203,14 +195,10 @@ def train(
     if not os.path.isdir(results_folder):
         os.makedirs(results_folder)
 
-    # Check if model was already trained
-    if os.path.isfile(f'{results_folder}FusionNet_training_loss_from_checkpoint{load_chkpt}.txt'):
-        raise RuntimeError('Network duplicate detected')
-
     # Save training parameters
     training_variable_names = getargspec(train)[0]
     training_parameters = getargspec(train)[3] 
-    with open(f'{models_folder}FusionNet_training_parameters.txt', 'a') as outfile:
+    with open(f'{models_folder}InfusionNet_training_parameters.txt', 'a') as outfile:
         for iVn, iP in zip(training_variable_names, training_parameters):
             args = f'{iVn},{iP}\n'
             outfile.write(args)
@@ -232,25 +220,25 @@ def train(
 
     # Assign devices
     if torch.cuda.is_available(): 
-        train_dataset_device = f'cuda:{gpu_device_ids[-1]}' 
+        dataset_device = f'cuda:{gpu_device_ids[-1]}' 
         nn_handler_device = f'cuda:{gpu_device_ids[0]}' 
         print(f'\tUsing GPU {gpu_device_ids[-1]} as online dataset storage...')
         print(f'\tUsing GPU {gpu_device_ids[0]} as handler for GPUs {gpu_device_ids}...')
     else: 
-        raise RuntimeError('\n\tAt least one GPU must be available to train FusionNet')
+        raise RuntimeError('\n\tAt least one GPU must be available to train InfusionNet')
     
     # Indicate how output will be saved
-    print(f'\tFusionNet checkpoints will be saved in path/models every {save_chkpt_interval} epochs...')
+    print(f'\tInfusionNet checkpoints will be saved in path/models every {save_chkpt_interval} epochs...')
     print(f'\tEpoch losses will also be saved there every {save_chkpt_interval} epochs...')
     print(f'\tExample network outputs will be saved in path/results every {save_image_interval} epochs...')
     print('\n\t', f'{print_sep}' * 71, '\n', sep='')
    
-    # Get training dataset
+    # Initiate custom DataSet() instance
     LIVECell_train_dset = LIVECell(
         path=path,
-        data_set=train_data_set,
-        data_subset=train_data_subset,
-        dataset_device=train_dataset_device,
+        data_set=data_set,
+        data_subset=data_subset,
+        dataset_device=dataset_device,
         offline_transforms=Compose([
             ToUnitInterval(),
             ToTensor(),
@@ -259,42 +247,16 @@ def train(
             RandomCrop(input_size=orig_size, output_size=crop_size),
             RandomOrientation(),
             LocalDeform(size=localdeform[0], ampl=localdeform[1]),
-            ToNormal(items=[0], new_mean=new_mean, new_std=new_std, old_mean=.5021, old_std=.0449),
+            ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
             ToBinary(cutoff=tobinary, items=[1]),
             Noise(std=noise, items=[0]),
         ])
     )
-
-    # Get validation dataset
-    LIVECell_val_dset = LIVECell(
-        path=path,
-        data_set=val_data_set,
-        data_subset=val_data_subset,
-        dataset_device=val_dataset_device,
-        offline_transforms=Compose([
-            ToUnitInterval(),
-            ToTensor(),
-            ToNormal(items=[0], new_mean=new_mean, new_std=new_std, old_mean=.5021, old_std=.0449),
-        ]),
-        epoch_pretransforms=Compose([
-            RandomCrop(input_size=orig_size, output_size=crop_size),
-            RandomOrientation(),
-        ])
-    )
       
     # Initiate custom data loader
-    train_dataloader = GPU_dataloader(
+    dataloader = GPU_dataloader(
         LIVECell_train_dset,
-        dataset_device=train_dataset_device,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
-    )
-
-    # Initiate custom data loader
-    val_dataloader = GPU_dataloader(
-        LIVECell_val_dset,
-        dataset_device=val_dataset_device,
+        dataset_device=dataset_device,
         batch_size=batch_size,
         shuffle=shuffle,
         drop_last=drop_last,
@@ -303,9 +265,9 @@ def train(
     # Define loss function 
     loss_func = nn.SmoothL1Loss()
 
-    # Initiate FusionNet
-    FusionNet = nn.DataParallel(
-        FusionGenerator(
+    # Initiate InfusionNet
+    InfusionNet = nn.DataParallel(
+        InfusionGenerator(
             in_chan, 
             out_chan, 
             ngf,
@@ -318,62 +280,51 @@ def train(
         output_device=nn_handler_device,
     )
     
-    # Load checkpoint and FusionNet
+    # Load checkpoint and InfusionNet
     if load_chkpt:
-        chkpt_path = f'{models_folder}FusionNet_checkpoint{load_chkpt}.tar'
+        chkpt_path = f'{models_folder}InfusionNet_checkpoint{load_chkpt}.tar'
         chkpt = torch.load(chkpt_path, map_location=nn_handler_device)
-        load_check = FusionNet.module.load_state_dict(chkpt['model_module_state_dict'])
+        load_check = InfusionNet.module.load_state_dict(chkpt['model_module_state_dict'])
         if not load_check:
             raise RuntimeError('\n\tNot all module parameters loaded correctly')
         print(f'\tCheckpoint of model {model} at epoch {load_chkpt} restored...')
-        print(f'\tUsing network to train on images from {train_data_set}/{train_data_subset}...')
+        print(f'\tUsing network to train on images from {data_set}/{data_subset}...')
 
     # Define optimizer and send to GPU
-    optimizer = torch.optim.SGD(FusionNet.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay, nesterov=True)
-    #optimizer = torch.optim.Adam(FusionNet.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(InfusionNet.parameters(), lr=lr, weight_decay=weight_decay)
     if load_chkpt:
         optimizer.load_state_dict(chkpt['optimizer_state_dict'])
     optimizer_to(optimizer, torch.device(nn_handler_device))
     
     # Define scheduler
-    #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=sched_step_size, gamma=gamma)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        factor=0.5, 
-        patience=50, 
-        threshold=0.01, 
-        cooldown=10,
-        min_lr=0.00005,
-        verbose=True
-    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=sched_step_size, gamma=gamma)
     if load_chkpt:
         scheduler.load_state_dict(chkpt['scheduler_state_dict'])
 
     # Make sure training mode is enabled
-    FusionNet.train()
+    InfusionNet.train()
     
     # Automatic mixed precision scaler
     if amp:
         scaler = torch.cuda.amp.GradScaler()
 
-    # #Delete this
-    # LIVECell.epoch_pretransform(LIVECell_train_dset)
-    # batch = next(iter(train_dataloader))
+    # Initialize loss log
+    loss_log = []
 
-    # Train FusionNet
+    # Train InfusionNet
     for iE in range(n_epochs):
 
-        # Initialize training loss log
-        train_loss_log = []
+        # Initialize batch loss log
+        batch_loss_log = []
 
         # Perform online epoch image transformations
         LIVECell.epoch_pretransform(LIVECell_train_dset)
 
         # Use DataLoader() to get batch
-        for iB, batch in enumerate(train_dataloader):
+        for iB, batch in enumerate(dataloader):
 
             # Set gradients to zero
-            FusionNet.zero_grad()
+            InfusionNet.zero_grad()
             optimizer.zero_grad()
             
             # If automatic mixed precision is enabled
@@ -382,18 +333,12 @@ def train(
 
                     # Wrap the batch and pass it forward
                     x = Variable(batch['image']).to(device=nn_handler_device)
-                    y_ = Variable(batch['annot']).to(device=nn_handler_device, dtype=torch.float)
-                    y = FusionNet(x)
+                    y_ = Variable(batch['annot']).to(device=nn_handler_device)
+                    y = InfusionNet(x)
 
                     # Calculate loss and pass it backwards
                     loss = loss_func(y, y_)
                     scaler.scale(loss).backward()
-
-                    # Clip gradients
-                    # torch.nn.utils.clip_grad_norm_(
-                    #     FusionNet.parameters(), 
-                    #     max_norm=1
-                    # )
 
                     # Update optimizer
                     scaler.step(optimizer)
@@ -408,28 +353,22 @@ def train(
 
                 # Wrap the batch and pass it forward
                 x = Variable(batch['image']).to(device=nn_handler_device)
-                y_ = Variable(batch['annot']).to(device=nn_handler_device, dtype=torch.float)
-                y = FusionNet(x)
+                y_ = Variable(batch['annot']).to(device=nn_handler_device)
+                y = InfusionNet(x)
                 
                 # Calculate loss and pass it backwards
                 loss = loss_func(y, y_)
                 loss.backward()
 
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(
-                    FusionNet.parameters(), 
-                    max_norm=1
-                )
-
                 # Update optimizer
                 optimizer.step()
 
             # Record individual batch losses
-            train_loss_log.append(loss.item())
+            batch_loss_log.append(loss.item())
 
             # Display progress
             epoch_ratio = (iE) / (n_epochs - 1)
-            batch_ratio = (iB + 1) / (len(train_dataloader))
+            batch_ratio = (iB + 1) / (len(dataloader))
             sys.stdout.write('\r')
             sys.stdout.write(
                 "\tEpochs: [{:<{}}] {:.0f}%; Batches: [{:<{}}] {:.0f}%; Loss: {:.5f}    ".format(
@@ -439,113 +378,48 @@ def train(
                 )
             )
             sys.stdout.flush()
-
-            # # Display progress
-            # epoch_ratio = (iE) / (n_epochs - 1)
-            # sys.stdout.write('\r')
-            # sys.stdout.write(
-            #     "\tEpochs: [{:<{}}] {:.0f}%; Loss: {:.5f}    ".format(
-            #         "=" * int(20*epoch_ratio), 20, 100*epoch_ratio,
-            #         loss.item()
-            #     )
-            # )
-            # sys.stdout.flush()
         
         # Update learning rate via scheduler
-        if not amp or amp and not optimizer_skipped:
-            scheduler.step(mean(train_loss_log))
+        if amp:
+            if not optimizer_skipped:
+                scheduler.step()
 
-        # Save training loss
-        with open(f'{results_folder}FusionNet_training_loss_from_checkpoint{load_chkpt}.txt', 'a') as outfile:
-            args = f'{iE},{mean(train_loss_log)}\n'
-            outfile.write(args)
+        # Note the average loss of the epoch
+        loss_log.append(mean(batch_loss_log))
 
         # At a regular interval
         if not (iE+1) % save_chkpt_interval:
 
-            # Save FusionNet checkpoint
+            # Save InfusionNet checkpoint
             torch.save({
-                'model_module_state_dict': FusionNet.module.state_dict(),
+                'model_module_state_dict': InfusionNet.module.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict()
-            }, f'{models_folder}FusionNet_checkpoint{load_chkpt+iE+1}.tar')
-       
+            }, f'{models_folder}InfusionNet_checkpoint{load_chkpt+iE+1}.tar')
+
+            # Save loss log
+            with open(f'{results_folder}InfusionNet_training_loss_from_checkpoint{load_chkpt}.txt', 'w') as outfile:
+                for iE, epoch_loss in enumerate(loss_log):
+                    args = f'{iE},{epoch_loss}\n'
+                    outfile.write(args)
+        
         # At a regular interval
         if not (iE+1) % save_image_interval:
-            
-            # Clip amount of images to be saved if necessary
-            last_batch_size = list(batch.values())[0].shape[0]
-            if save_images > last_batch_size:
-                save_images = last_batch_size
-                print(f'\tAmount of images to be saved has been reset to maximum {save_images}...')
 
             # Save example network image outputs
-            image_idxs = torch.randperm(last_batch_size)
-            for idx in range(save_images):
-                iI = image_idxs[idx].item()
-                v_utils.save_image(
-                    x[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
-                    f'{results_folder}FusionNet_image_checkpoint{load_chkpt}_epoch{iE+1}_image{iI}.png'
-                )
-                v_utils.save_image(
-                    y_[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
-                    f'{results_folder}FusionNet_annot_checkpoint{load_chkpt}_epoch{iE+1}_image{iI}.png'
-                )
-                v_utils.save_image(
-                    y[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
-                    f'{results_folder}FusionNet_pred_checkpoint{load_chkpt}_epoch{iE+1}_image{iI}.png'
-                )
-
-        # At a regular interval
-        if not (iE+1) % validation_interval:
-
-            # Set model to evaluation mode
-            FusionNet.eval()
-
-            # Perform online epoch image transformations
-            LIVECell.epoch_pretransform(LIVECell_val_dset)
-
-            # Initialize validation loss log
-            val_loss_log = []
-
-            # Use DataLoader() to get batch
-            for iB, batch in enumerate(val_dataloader):
-
-                # Set gradients to zero
-                FusionNet.zero_grad()
-                optimizer.zero_grad()
-
-                # If automatic mixed precision is enabled
-                if amp:
-                    with torch.cuda.amp.autocast():
-
-                        # Wrap the batch and pass it forward
-                        x = Variable(batch['image']).to(device=nn_handler_device)
-                        y_ = Variable(batch['annot']).to(device=nn_handler_device, dtype=torch.float)
-                        y = FusionNet(x)
-
-                        # Calculate loss
-                        loss = loss_func(y, y_)
-
-                else:
-                    # Wrap the batch and pass it forward
-                        x = Variable(batch['image']).to(device=nn_handler_device)
-                        y_ = Variable(batch['annot']).to(device=nn_handler_device, dtype=torch.float)
-                        y = FusionNet(x)
-
-                        # Calculate loss
-                        loss = loss_func(y, y_)
-
-                # Record individual batch losses
-                val_loss_log.append(loss.item())
-
-            # Save validation loss log
-            with open(f'{results_folder}FusionNet_validation_loss_from_checkpoint{load_chkpt}.txt', 'a') as outfile:
-                args = f'{iE},{mean(val_loss_log)}\n'
-                outfile.write(args)
-
-            # Set model to training mode
-            FusionNet.train()
+            iI = np.random.randint(0, list(batch.values())[0].shape[0])
+            v_utils.save_image(
+                x[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
+                f'{results_folder}InfusionNet_image_checkpoint{load_chkpt+iE+1}_epoch{iE+1}.png'
+            )
+            v_utils.save_image(
+                y_[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
+                f'{results_folder}InfusionNet_annot_checkpoint{load_chkpt+iE+1}_epoch{iE+1}.png'
+            )
+            v_utils.save_image(
+                y[iI, 0:1, :, :].detach().to('cpu').type(torch.float32),
+                f'{results_folder}InfusionNet_pred_checkpoint{load_chkpt+iE+1}_epoch{iE+1}.png'
+            )
 
 
 # If train.py is run directly

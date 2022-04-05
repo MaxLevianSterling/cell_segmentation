@@ -233,24 +233,41 @@ def optimizer_to(optimizer, device):
                       
                         
 def map_tensor_coordinates(input, coordinates, chan_dim, batch_dim):
-    ''' PyTorch version of scipy.ndimage.interpolation.map_coordinates
-    input: (B, C, H, W)
-    coordinates: (2, ...)
-    '''
+    """ PyTorch version of scipy.ndimage.interpolation.map_coordinates
+    
+    Args:
+        input (BxCxHxW tensor): tensor to be distorted
+        coordinates (2x<FlatInput> tensor): new coordinates of all
+            data points
+        chan_dim (1x<FlatInput> tensor): index tensor for channel
+            dimension        
+        batch_dim (1x<FlatInput> tensor): index tensor for batch
+            dimension
+    """
+
+    # Get input shape
     h = input.shape[2]
     w = input.shape[3]
 
+    # Wrap coordinates around image
     def _coordinates_pad_wrap(h, w, coordinates):
         coordinates[0] = coordinates[0] % h
         coordinates[1] = coordinates[1] % w
         return coordinates
 
+    # Get nearest pixels
     co_floor = torch.floor(coordinates).long()
     co_ceil = torch.ceil(coordinates).long()
+
+    # Calculate distortion magnitudes
     d1 = (coordinates[1] - co_floor[1].float())
     d2 = (coordinates[0] - co_floor[0].float())
+
+    # Wrap coordinates around image
     co_floor = _coordinates_pad_wrap(h, w, co_floor)
     co_ceil = _coordinates_pad_wrap(h, w, co_ceil)
+
+    # Process distortions through input
     f00 = input[batch_dim, chan_dim, co_floor[0], co_floor[1]]
     f10 = input[batch_dim, chan_dim, co_floor[0], co_ceil[1]]
     f01 = input[batch_dim, chan_dim, co_ceil[0], co_floor[1]]

@@ -14,8 +14,8 @@ def binary2json(
     data_set = 'LIVECell',
     data_subset = 'extra',
     print_separator = '$',
-    model = '2',
-    snapshot = 150,
+    model = 'base_128',
+    checkpoint = 20000,
     mode = 'eval'
 ):
     """Converts binary predictions to .json COCO
@@ -36,7 +36,7 @@ def binary2json(
         print_separator (string): print output separation
             character (default = '$')
         model (string): current model identifier (default = 1)
-        snapshot (int): training epoch age of snapshot used
+        checkpoint (int): training epoch age of checkpoint used
             for evaluation (default = 50)
         mode (string): function mode can be 'eval' or 'prep',
             depending on if the input or output mask array 
@@ -80,7 +80,7 @@ def binary2json(
     # Skip if .json file exists already
     if mode == 'eval':
         json_exists = os.path.isfile(
-            f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json'
+            f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.json'
         )
         if json_exists:
             print('\tFile already existed. Continuing...')
@@ -89,7 +89,7 @@ def binary2json(
     # Load binary mask array and filename identifiers
     if mode == 'eval':
         arr = np.load(
-            f'{results_folder}FusionNet_snapshot{snapshot}_prediction_array.npy'
+            f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.npy'
         )
         with open(f'{image_folder}filenames.txt', 'r') as infile:
             filenames = []
@@ -223,7 +223,7 @@ def binary2json(
 
     # Save .json file
     if mode == 'eval':
-        with open(f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json', 'w') as outfile:
+        with open(f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.json', 'w') as outfile:
             json.dump(json_file, outfile)
     elif mode == 'prep':
         with open(f'{annot_folder}json.json', 'w') as outfile:
@@ -238,7 +238,7 @@ def evaluate(
     data_subset = 'extra',
     print_separator = '$',
     model = '2',
-    snapshot = 150,
+    checkpoint = 150,
     mode = 'from_bin' 
 ):
     """Evaluates cell instance segmentation network output with 
@@ -264,7 +264,7 @@ def evaluate(
         print_separator (string): print output separation
             character
         model (string): current model identifier
-        snapshot (int): training epoch age of snapshot used
+        checkpoint (int): training epoch age of checkpoint used
             for evaluation
         mode (string): function mode can be 'original' or 
             'from_bin', depending on if the .json file used 
@@ -312,7 +312,7 @@ def evaluate(
     with HiddenPrints():
         gt_json_file = coco.COCO(gt_filepath)       
         dt_json_file = coco.COCO(
-           f'{results_folder}FusionNet_snapshot{snapshot}_predictions.json'
+           f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.json'
         )
 
     # Get image IDs
@@ -447,7 +447,7 @@ def evaluate(
     af1_iou = 2 * ap_iou * ar_iou / (ap_iou + ar_iou) 
     af1 = np.nanmean(af1_iou, axis=1)
 
-    with open(f'{results_folder}FusionNet_snapshot{snapshot}_performance_metrics.txt', 'w') as outfile:
+    with open(f'{results_folder}FusionNet_checkpoint{checkpoint}_performance_metrics.txt', 'w') as outfile:
         args = f'{ap_iou},{ap},{afnr_iou},{afnr},{af1_iou},{af1}'
         outfile.write(args)
 
@@ -459,9 +459,9 @@ if __name__ == '__main__':
     binary2json(
         path = '/mnt/sdg/maxs',
         data_set = 'LIVECell',
-        data_subset = 'val',
-        model = '2',
-        snapshot = 450,
+        data_subset = 'extra',
+        model = 'base_128',
+        checkpoint = 20000,
         mode = 'eval'
     )
 
@@ -469,9 +469,9 @@ if __name__ == '__main__':
     evaluate(
         path = '/mnt/sdg/maxs',
         data_set = 'LIVECell',
-        data_subset = 'val',
-        model = '2',
-        snapshot = 450,
+        data_subset = 'extra',
+        model = 'base_128',
+        checkpoint = 20000,
         mode = 'from_bin' 
     )
     print('\n\n', end='')
