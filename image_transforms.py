@@ -1,4 +1,3 @@
-import cv2 
 import torch
 import warnings
 import numpy                        as np
@@ -6,7 +5,6 @@ import torchvision.utils            as v_utils
 import torch.nn.functional          as tfunc
 from math                           import ceil
 from utils                          import map_tensor_coordinates
-from scipy.ndimage.interpolation    import map_coordinates
 
 
 class Compose():
@@ -19,12 +17,16 @@ class Compose():
             worker_init_fn or other function to 
             achieve this per epoch or otherwise.
 
-    Example:
-        epoch_pretransforms=Compose([
+    Examples:
+    -   offline_transforms=Compose([
+            ToTensor(type=torch.float),
+            ToUnitInterval(items=[0, 1]),
+            ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
+        ])
+    -   epoch_pretransforms=Compose([
             RandomCrop(input_size=orig_size, output_size=crop_size),
             RandomOrientation(),
             LocalDeform(size=localdeform[0], ampl=localdeform[1]),
-            ToNormal(items=[0], new_mean=new_mean, new_std=new_std),
             ToBinary(cutoff=tobinary, items=[1]),
             Noise(std=noise, items=[0]),
         ])
@@ -39,12 +41,10 @@ class Compose():
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
-                dict): input images
+            sample (string:BxCxHxW tensor dict): input images
                     
         Returns:
-            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
-                output images
+            (string:BxCxHxW tensor dict): output images
         """    
 
         # Conduct transforms sequentially
@@ -65,51 +65,17 @@ class Compose():
         return format_string
 
 
-class ToUnitInterval():
-    """ Converts a numpy array or list of numpy arrays 
-    from uint8 range to the unit interval
-    """
-
-    def __call__(self, sample):
-        """ Args:
-            sample (string:[np.ndarray] dict): input images
-                    
-        Returns:
-            (string:[np.ndarray.float] dict): output images
-        """   
-
-        # Get input dictionary values
-        values = [
-            value 
-            for value in sample.values()
-        ]
-
-        # Transform to unit interval
-        if isinstance(values[0], list) \
-                and isinstance(values[0][0], np.ndarray):
-            values = [
-                [
-                    values[iV][iC].astype('float32') / 255
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values))
-            ]
-        elif isinstance(values[0], np.ndarray):
-            values = [
-               values[iV].astype('float32') / 255 
-               for iV in range(len(values))
-            ]
-
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-
-
 class ToTensor():
     """ Converts a numpy array or list of numpy arrays to
     PyTorch tensor format
     """
+
+    def __init__(self, type):
+        """ Args:
+            type (PyTorch datatype): output tensor datatype
+        """
+
+        self.type = type
 
     def __call__(self, sample):
         """ Args:
@@ -159,17 +125,145 @@ class ToTensor():
                 for iV in range(len(values))
             ]
             values = [
-                torch.from_numpy(values[iV]) 
+                torch.from_numpy(values[iV]).type(self.type)
                 for iV in range(len(values))
             ]
         else:
             raise RuntimeError('Wrong input format used')
-            
+        
+        # # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/tensor_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/tensor_annot.png'
+        # )
+
         return {
             list(sample.keys())[iV]: values[iV] 
             for iV in range(len(values))
         }
 
+
+class ToUnitInterval():
+    """ Converts a numpy array or list of numpy arrays 
+    from uint8 range to the unit interval
+    """
+
+    def __init__(self, items):
+        """ Args:
+            items (list): list of sample value numbers 
+                to convert to binary
+        """    
+
+        assert isinstance(items, list)
+        self.items = items
+
+    def __call__(self, sample):
+        """ Args:
+            sample (string:[np.ndarray] dict): input images
+                    
+        Returns:
+            (string:[np.ndarray.float] dict): output images
+        """   
+
+        # Get input dictionary values
+        values = [
+            value 
+            for value in sample.values()
+        ]
+
+        # Transform to unit interval
+        if torch.is_tensor(values[0]) \
+                and len(values[0].shape) == 4:
+            values = [
+               values[iV] / 255 
+               if iV in self.items
+               else values[iV]
+               for iV in range(len(values))
+            ]
+        else:
+            raise RuntimeError('Wrong input type')
+
+        # # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/unit_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/unit_annot.png'
+        # )
+
+        return {
+            list(sample.keys())[iV]: values[iV] 
+            for iV in range(len(values))
+        }
+
+
+class ToNormal():
+    """Normalizes input according to new parameters
+    for the entire set"""
+
+    def __init__(self, items, new_mean, new_std):
+        """ Args:
+            items (list): list of sample value numbers 
+                to convert to binary
+            new_mean (float): the new set mean
+            new_std (float): the new set standard deviation
+        """    
+
+        assert isinstance(items, list)
+        self.items = items
+
+        assert isinstance(new_mean, (int, float))
+        self.new_mean = new_mean
+
+        assert isinstance(new_std, (int, float))
+        self.new_std = new_std
+        
+    def __call__(self, sample):
+        """ Args:
+            sample (string:BxCxHxW tensor dict): input images
+                    
+        Returns:
+            (string:BxCxHxW tensor dict): output images
+        """   
+
+        # Get input dictionary values        
+        values = [
+            value 
+            for value in sample.values()
+        ]
+        
+        for iV in range(len(values)):
+            if iV in self.items:
+
+                # Get old distribution
+                old_mean = torch.mean(values[iV])
+                old_std = torch.std(values[iV])
+
+                # Transform
+                values[iV] = ((values[iV] - old_mean) / old_std) \
+                    * self.new_std + self.new_mean
+
+        # # Plotting utility
+        # v_utils.save_image(
+        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/normal_image.png'
+        # )
+        # v_utils.save_image(
+        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #     f'/mnt/sdg/maxs/results/LIVECell/normal_annot.png'
+        # )
+         
+        return {
+            list(sample.keys())[iV]: values[iV] 
+            for iV in range(len(values))
+        }
+       
 
 class RandomCrop():
     """Randomly crops input"""
@@ -196,12 +290,10 @@ class RandomCrop():
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
-                dict): input images
+            sample (string:BxCxHxW tensor dict): input images
                     
         Returns:
-            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
-                output images
+            (string:BxCxHxW tensor dict): output images
         """    
 
         # Get input dictionary values
@@ -222,13 +314,7 @@ class RandomCrop():
 
         # Crop
         for iV in range(len(values)):
-            if isinstance(values[iV], np.ndarray) \
-                    and len(values[iV].shape) == 2:
-                values[iV] = values[iV][
-                    top: top + self.output_size[0],
-                    left: left + self.output_size[1]
-                ]
-            elif torch.is_tensor(values[iV]) \
+            if torch.is_tensor(values[iV]) \
                     and len(values[iV].shape) == 4:
                 values[iV] = values[iV][
                     :,
@@ -236,8 +322,10 @@ class RandomCrop():
                     top: top + self.output_size[0],
                     left: left + self.output_size[1]
                 ]
+            else:
+                raise RuntimeError('Wrong input type')
         
-        # Plotting utility
+        # # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/crop_image.png'
@@ -255,17 +343,15 @@ class RandomCrop():
 
 class RandomOrientation():
     """Randomly orients input into one of eight orientations 
-    (all 90 degree rotations and mirrors)
+        (all 90 degree rotations and mirrors)
     """
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
-                dict): input images
+            sample (string:BxCxHxW tensor dict): input images
                     
         Returns:
-            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
-                output images
+            (string:BxCxHxW tensor dict): output images
         """   
 
         # Get input dictionary values
@@ -279,21 +365,7 @@ class RandomOrientation():
         n_rotations = torch.randint(low=0, high=4, size=(1,))   
 
         for iV in range(len(values)):
-            if isinstance(values[iV], np.ndarray) \
-                    and len(values[iV].shape) == 2:
-
-                # Vertical flip
-                if mirror > 2:
-                    values[iV] = np.flip(values[iV], 0)
-
-                # Horizontal flip
-                if mirror % 2 == 0:
-                    values[iV] = np.flip(values[iV], 1) 
-
-                # Counterclockwise rotation
-                values[iV] = np.rot90(values[iV], n_rotations)
-
-            elif torch.is_tensor(values[iV]) \
+            if torch.is_tensor(values[iV]) \
                     and len(values[iV].shape) == 4:
                 
                 # Vertical flip
@@ -310,8 +382,10 @@ class RandomOrientation():
                     n_rotations.item(), 
                     [2, 3]
                 )
+            else:
+                raise RuntimeError('Wrong input type')
 
-        # Plotting utility
+        # # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/orient_image.png'
@@ -351,12 +425,10 @@ class LocalDeform():
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
-                dict): input images
+            sample (string:BxCxHxW tensor dict): input images
                     
         Returns:
-            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
-                output images
+            (string:BxCxHxW tensor dict): output images
         """   
 
         # Get input dictionary values
@@ -368,49 +440,7 @@ class LocalDeform():
         # Get input shape
         shape = values[0].shape
 
-        if isinstance(values[0], np.ndarray) and len(shape) == 2:
-
-            # Initialize random sparse vector field
-            dS = [
-                np.random.uniform(
-                    -self.ampl, 
-                    self.ampl, 
-                    size=self.size
-                ) 
-                for iS in range(2)
-            ]
-
-            # Zero out edges
-            for iS in range(2):
-                for n in [0, -1]:
-                    dS[iS][n, :] = 0
-                    dS[iS][:, n] = 0
-
-            # Resize vector field to pixel resolution
-            dS = [
-                cv2.resize(dS[iS], (shape[0], shape[1])) 
-                for iS in range(2)
-            ]       
-            
-            # Determine axis-wise pixel transformations
-            X, Y = np.meshgrid(
-                np.arange(shape[0]), 
-                np.arange(shape[1])
-            )
-            indices = np.reshape(Y+dS[1], (-1, 1)), \
-                np.reshape(X+dS[0], (-1, 1))
-
-            # Deform
-            values = [
-                map_coordinates(
-                    values[iV], 
-                    indices, 
-                    order=1
-                ).reshape(shape) 
-                for iV in range(len(values))
-            ]
-
-        elif torch.is_tensor(values[0]) and len(shape) == 4:
+        if torch.is_tensor(values[0]) and len(shape) == 4:
             
             # Get current GPU device
             current_device = f'cuda:{values[0].get_device()}'
@@ -492,8 +522,10 @@ class LocalDeform():
                 ).reshape(shape) 
                 for iV in range(len(values))
             ]
+        else:
+            raise RuntimeError('Wrong input type')
 
-        # Plotting utility
+        # # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/deform_image.png'
@@ -508,76 +540,6 @@ class LocalDeform():
             for iV in range(len(values))
         }
 
-
-class ToNormal():
-    """Normalizes input according to new parameters
-    for the entire set"""
-
-    def __init__(self, items, new_mean, new_std, old_mean, old_std):
-        """ Args:
-            items (list): list of sample value numbers 
-                to convert to binary
-            new_mean (float): the new set mean
-            new_std (float): the new set standard deviation
-            old_mean (float): the old set mean
-            old_std (float): the old set standard deviation
-        """    
-
-        assert isinstance(items, list)
-        self.items = items
-
-        assert isinstance(new_mean, (int, float))
-        self.new_mean = new_mean
-
-        assert isinstance(new_std, (int, float))
-        self.new_std = new_std
-
-        assert isinstance(old_mean, (int, float))
-        self.old_mean = old_mean
-
-        assert isinstance(old_std, (int, float))
-        self.old_std = old_std
-        
-    def __call__(self, sample):
-        """ Args:
-            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
-                dict): input images
-                    
-        Returns:
-            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
-                output images
-        """   
-
-        # Get input dictionary values        
-        values = [
-            value 
-            for value in sample.values()
-        ]
-        
-        # Transform to new normal distribution
-        values = [
-            ((values[iV] - self.old_mean) / self.old_std) \
-                * self.new_std + self.new_mean
-            if iV in self.items
-            else values[iV]
-            for iV in range(len(values)) 
-        ] 
-
-        # # Plotting utility
-        # v_utils.save_image(
-        #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/normal_image.png'
-        # )
-        # v_utils.save_image(
-        #     values[1][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/normal_annot.png'
-        # )
-         
-        return {
-            list(sample.keys())[iV]: values[iV] 
-            for iV in range(len(values))
-        }
-      
 
 class ToBinary():
     """Converts input from unit interval range to binary 
@@ -600,12 +562,10 @@ class ToBinary():
 
     def __call__(self, sample):
         """ Args:
-            sample (string:([HxW np.ndarray.float] or 
-                BxCxHxW tensor) dict): input images
+            sample (string:BxCxHxW tensor dict): input images
                     
         Returns:
-            (string:([HxW np.ndarray] or BxCxHxW tensor) dict): 
-                output images
+            (string:BxCxHxW tensor dict): output images
         """   
 
         # Get input dictionary values
@@ -613,29 +573,10 @@ class ToBinary():
             value 
             for value in sample.values()
         ]
-
+        #valuess = [copy.deepcopy(values) for i in range(19)]
         # Transform to binary as per cutoff
-        if isinstance(values[0], list) \
-                and isinstance(values[0][0], np.ndarray):
-            values = [
-                [
-                    np.where(values[iV][iC] > self.cutoff, 1, 0)
-                    for iC in range(len(values[0]))
-                ]
-                for iV in range(len(values)) 
-                if iV in self.items
-            ]            
-        elif torch.is_tensor(values[0]) \
-                and len(values[0].shape) == 2:
-            values = [
-                np.where(
-                    values[iV] > self.cutoff, 1, 0
-                ).astype('uint8')
-                if iV in self.items
-                else values[iV]
-                for iV in range(len(values))
-            ]
-        elif torch.is_tensor(values[0]) \
+        #for i in range(19):
+        if torch.is_tensor(values[0]) \
                 and len(values[0].shape) == 4:
             if values[0].get_device() >= 0:
                 current_device = f'cuda:{values[0].get_device()}'
@@ -659,8 +600,27 @@ class ToBinary():
                 else values[iV]
                 for iV in range(len(values))
             ]
+        else:
+            raise RuntimeError('Wrong input type')
 
         # Plotting utility
+        # for i in range(1,20):
+        #     v_utils.save_image(
+        #         valuess[i-1][0][11,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #         f'/mnt/sdg/maxs/results/LIVECell/binary_image_0{i/20}_11.png'
+        #     )
+        #     v_utils.save_image(
+        #         valuess[i-1][0][21,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #         f'/mnt/sdg/maxs/results/LIVECell/binary_image_0{i/20}_21.png'
+        #     )
+        #     v_utils.save_image(
+        #         valuess[i-1][0][66,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #         f'/mnt/sdg/maxs/results/LIVECell/binary_image_0{i/20}_66.png'
+        #     )
+        #     v_utils.save_image(
+        #         valuess[i-1][0][76,0:1,:,:].detach().to('cpu').type(torch.float32), 
+        #         f'/mnt/sdg/maxs/results/LIVECell/binary_image_0{i}_76.png'
+        #     )
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/binary_image.png'
@@ -698,12 +658,10 @@ class Noise():
 
     def __call__(self, sample):
         """ Args:
-            sample (string:(HxW np.ndarray or BxCxHxW tensor) 
-                dict): input images
+            sample (string:BxCxHxW tensor dict): input images
                     
         Returns:
-            (string:(HxW np.ndarray or BxCxHxW tensor) dict): 
-                output images
+            (string:BxCxHxW tensor dict): output images
         """   
 
         # Get input dictionary values
@@ -715,14 +673,8 @@ class Noise():
         # Add noise and clip at unit interval
         for iV in range(len(values)):
             if iV in self.items:
-                if len(values[iV].shape) == 2:
-                    values[iV] = np.clip(
-                        values[iV] + np.random.normal(
-                            scale=self.std, 
-                            size=values[0].shape
-                        ), 0, 1
-                    ) 
-                elif len(values[iV].shape) == 4:
+                if torch.is_tensor(values[0]) \
+                        and len(values[0].shape) == 4:
                     current_device = f'cuda:{values[iV].get_device()}'
                     noise = torch.normal(
                         mean=0,
@@ -730,8 +682,10 @@ class Noise():
                         size=values[iV].shape
                     ).to(device=current_device, dtype=torch.float)
                     values[iV] = values[iV] + noise
+                else:
+                    raise RuntimeError('Wrong input type')
 
-        # Plotting utility
+        # # Plotting utility
         # v_utils.save_image(
         #     values[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
         #     f'/mnt/sdg/maxs/results/LIVECell/noise_image.png'
@@ -803,11 +757,11 @@ class FullCrop():
 
         # Determine cropping positions
         tops = [
-            iCh * round((self.input_size[0]-self.output_size[0]) / (n_crops_h-1)) 
+            round(iCh * (self.input_size[0]-self.output_size[0]) / (n_crops_h-1)) 
             for iCh in range(n_crops_h)
         ]
         lefts = [
-            iCw * round((self.input_size[1]-self.output_size[1]) / (n_crops_w-1)) 
+            round(iCw * (self.input_size[1]-self.output_size[1]) / (n_crops_w-1)) 
             for iCw in range(n_crops_w)
         ]
        
@@ -955,39 +909,39 @@ class StackReorient():
                         np.flip(values[iV][iC][7, :, :], (0, 1))
                     ), axis=0)
         
-        # # Plotting utility
-        # v_utils.save_image(
-        #     values[0][5][10,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image0.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,1:2,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image1.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,2:3,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image2.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,3:4,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image3.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,4:5,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image4.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,5:6,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image5.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,6:7,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image6.png'
-        # )
-        # v_utils.save_image(
-        #     values[0][5][10,7:8,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/reoriented_image7.png'
-        # )
+        # Plotting utility
+        v_utils.save_image(
+            values[0][5][10,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image0.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,1:2,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image1.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,2:3,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image2.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,3:4,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image3.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,4:5,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image4.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,5:6,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image5.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,6:7,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image6.png'
+        )
+        v_utils.save_image(
+            values[0][5][10,7:8,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/reoriented_image7.png'
+        )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -1025,11 +979,11 @@ class StackMean():
             for iV in range(len(values))
         ]
 
-        # # Plotting utility
-        # v_utils.save_image(
-        #     values[0][5][10,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image0.png'
-        # )
+        # Plotting utility
+        v_utils.save_image(
+            values[0][5][10,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/mean_image0.png'
+        )
 
         return {
             list(sample.keys())[iV]: values[iV] 
@@ -1094,11 +1048,11 @@ class Uncrop():
 
         # Determine cropping positions
         tops = [
-            iCh * round((self.output_size[0]-self.input_size[0]) / (n_crops_h-1)) 
+            round(iCh * (self.output_size[0]-self.input_size[0]) / (n_crops_h-1)) 
             for iCh in range(n_crops_h)
         ]
         lefts = [
-            iCw * round((self.output_size[1]-self.input_size[1]) / (n_crops_w-1)) 
+            round(iCw * (self.output_size[1]-self.input_size[1]) / (n_crops_w-1)) 
             for iCw in range(n_crops_w)
         ]
 
@@ -1194,27 +1148,27 @@ class Uncrop():
                 for iV in range(len(values))
             ]
 
-        # # Plotting utility
-        # v_utils.save_image(
-        #     prediction[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image0.png'
-        # )
-        # v_utils.save_image(
-        #     prediction[0][1,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image1.png'
-        # )
-        # v_utils.save_image(
-        #     prediction[0][2,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image2.png'
-        # )
-        # v_utils.save_image(
-        #     prediction[0][3,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image3.png'
-        # )
-        # v_utils.save_image(
-        #     prediction[0][4,0:1,:,:].detach().to('cpu').type(torch.float32), 
-        #     f'/mnt/sdg/maxs/results/LIVECell/mean_image4s.png'
-        # )
+        # Plotting utility
+        v_utils.save_image(
+            prediction[0][0,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/mean_image0.png'
+        )
+        v_utils.save_image(
+            prediction[0][1,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/mean_image1.png'
+        )
+        v_utils.save_image(
+            prediction[0][2,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/mean_image2.png'
+        )
+        v_utils.save_image(
+            prediction[0][3,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/mean_image3.png'
+        )
+        v_utils.save_image(
+            prediction[0][4,0:1,:,:].detach().to('cpu').type(torch.float32), 
+            f'/mnt/sdg/maxs/results/LIVECell/mean_image4s.png'
+        )
 
         return {
             list(sample.keys())[iV]: prediction[iV] 

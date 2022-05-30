@@ -268,7 +268,7 @@ def test(
             
             # Wrap the batch and pass it forward
             x = Variable(batch['image']).to(device=nn_handler_device)
-            y_ = Variable(batch['annot']).to(device=nn_handler_device)
+            y_ = Variable(batch['comp']).to(device=nn_handler_device)
             y = FusionNet(x)
             loss = loss_func(y, y_)
 

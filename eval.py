@@ -5,18 +5,24 @@ import json
 import numpy        as np
 from utils          import path_gen
 from utils          import HiddenPrints
+from utils          import scale_contour
+from utils          import enlarged_contour
 from pycocotools    import coco
 from pycocotools    import mask
+from math           import ceil
 
 
 def binary2json(
-    path = '/mnt/sdg/maxs',
-    data_set = 'LIVECell',
-    data_subset = 'extra',
+    path,
+    data_set,
+    data_type,
+    data_subset,
+    subset_type,
+    annot_type,
+    mode,
+    model = '',
+    checkpoint = '',
     print_separator = '$',
-    model = 'base_128',
-    checkpoint = 20000,
-    mode = 'eval'
 ):
     """Converts binary predictions to .json COCO
         instance segmentation format
@@ -56,23 +62,29 @@ def binary2json(
         path,
         'data',
         data_set,
-        'images',
+        data_type,
         data_subset,
-        'variables'
+        'images',
+        subset_type,
     ])
     annot_folder = path_gen([
         path,
         'data',
         data_set,
-        'annotations',
+        data_type,
         data_subset,
-        'variables'
+        'annotations',
+        subset_type,
+        annot_type,
     ])
     results_folder = path_gen([
         path,
         'results',
         data_set,
+        data_type,
         data_subset,
+        subset_type,
+        annot_type,
         model,
         'deployment'
     ])
@@ -80,7 +92,7 @@ def binary2json(
     # Skip if .json file exists already
     if mode == 'eval':
         json_exists = os.path.isfile(
-            f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.json'
+            f'{results_folder}checkpoint{checkpoint}_predictions.json'
         )
         if json_exists:
             print('\tFile already existed. Continuing...')
@@ -89,9 +101,9 @@ def binary2json(
     # Load binary mask array and filename identifiers
     if mode == 'eval':
         arr = np.load(
-            f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.npy'
+            f'{results_folder}checkpoint{checkpoint}_predictions.npy'
         )
-        with open(f'{image_folder}filenames.txt', 'r') as infile:
+        with open(f'{image_folder}variables/filenames.txt', 'r') as infile:
             filenames = []
             cat_ids = []
             for line in infile:
@@ -99,9 +111,9 @@ def binary2json(
                 cat_ids.append(line.split('_')[0])
     elif mode == 'prep':
         arr = np.load(
-            f'{annot_folder}array.npy'
+            f'{annot_folder}variables/array.npy'
         )
-        with open(f'{annot_folder}filenames.txt', 'r') as infile:
+        with open(f'{annot_folder}variables/filenames.txt', 'r') as infile:
             filenames = []
             cat_ids = []
             for line in infile:
@@ -156,7 +168,7 @@ def binary2json(
     for image_id, filename in enumerate(filenames, 1):
 
         # Display progress
-        image_ratio = (image_id - 1) / (len(filenames) - 1)
+        image_ratio = (image_id - 1) / (len(filenames))
         sys.stdout.write('\r')
         sys.stdout.write(
             "\tImages: [{:<{}}] {:.0f}%".format(
@@ -185,8 +197,12 @@ def binary2json(
         for contour in contours:
             
             # Check if polygon is 2D
-            if contour.size >= 6:
-
+            if cv2.moments(contour)['m00'] > 0:
+                
+                (x,y),radius = cv2.minEnclosingCircle(contour)
+                radius = ceil(radius)
+                contour = enlarged_contour(contour, (radius+1)/radius)
+                
                 # Get cell contour data
                 annotation_id += 1
                 segmentation = contour.astype(float).flatten().tolist()
@@ -223,23 +239,26 @@ def binary2json(
 
     # Save .json file
     if mode == 'eval':
-        with open(f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.json', 'w') as outfile:
+        with open(f'{results_folder}checkpoint{checkpoint}_predictions.json', 'w') as outfile:
             json.dump(json_file, outfile)
     elif mode == 'prep':
-        with open(f'{annot_folder}json.json', 'w') as outfile:
+        with open(f'{annot_folder}variables/json.json', 'w') as outfile:
             json.dump(json_file, outfile)
 
     print('\n')
 
 
 def evaluate(
-    path = '/mnt/sdg/maxs',
-    data_set = 'LIVECell',
-    data_subset = 'extra',
+    path,
+    data_set,
+    data_type,
+    data_subset,
+    subset_type,
+    annot_type,
+    mode,
+    model,
+    checkpoint,
     print_separator = '$',
-    model = '2',
-    checkpoint = 150,
-    mode = 'from_bin' 
 ):
     """Evaluates cell instance segmentation network output with 
         AP, AFNR, and F1 scores
@@ -281,20 +300,25 @@ def evaluate(
     # Generate ground truth path string
     if mode == 'original':
         gt_filepath = path_gen([
-            path,
+            path, 
             'data',
             data_set,
+            data_type,
+            data_subset,
             'annotations',
-            f'{data_subset}.json'
+            f'{subset_type}.json'
         ], file=True)
     elif mode == 'from_bin':
         gt_filepath = path_gen([
-            path,
+            path, 
             'data',
             data_set,
-            'annotations',
+            data_type,
             data_subset,
-            'variables',
+            'annotations',
+            subset_type,
+            annot_type,
+            'variables'
             'json.json'
         ], file=True)
 
@@ -303,7 +327,10 @@ def evaluate(
         path,
         'results',
         data_set,
+        data_type,
         data_subset,
+        subset_type,
+        annot_type,
         model,
         'deployment'
     ])
@@ -312,7 +339,7 @@ def evaluate(
     with HiddenPrints():
         gt_json_file = coco.COCO(gt_filepath)       
         dt_json_file = coco.COCO(
-           f'{results_folder}FusionNet_checkpoint{checkpoint}_predictions.json'
+           f'{results_folder}checkpoint{checkpoint}_predictions.json'
         )
 
     # Get image IDs
@@ -341,10 +368,17 @@ def evaluate(
     # Calculate detection performance for all processed images and instances
     for iI in range(dt_n_images):
 
+        # Get ground truth image ID equivalent 
+        filename = dt_imgs[iI]['file_name']
+        for gt_img in gt_imgs:
+            if gt_img['file_name'] == filename:
+                gt_id = gt_img['id']
+                break
+
         # Load all annotations in the current image
         dt_ann_ids_image = dt_json_file.getAnnIds(imgIds = dt_img_ids[iI])
         dt_anns_image = dt_json_file.loadAnns(dt_ann_ids_image)        
-        gt_ann_ids_image = gt_json_file.getAnnIds(imgIds = dt_img_ids[(iI+1) % dt_n_images])
+        gt_ann_ids_image = gt_json_file.getAnnIds(imgIds = gt_id)
         gt_anns_image = gt_json_file.loadAnns(gt_ann_ids_image)
 
         # Get all ground truth and detected instance areas
@@ -447,8 +481,8 @@ def evaluate(
     af1_iou = 2 * ap_iou * ar_iou / (ap_iou + ar_iou) 
     af1 = np.nanmean(af1_iou, axis=1)
 
-    with open(f'{results_folder}FusionNet_checkpoint{checkpoint}_performance_metrics.txt', 'w') as outfile:
-        args = f'{ap_iou},{ap},{afnr_iou},{afnr},{af1_iou},{af1}'
+    with open(f'{results_folder}checkpoint{checkpoint}_performance_metrics.txt', 'w') as outfile:
+        args = f'ap_iou{ap_iou}\n\nap{ap}\n\nafnr_iou{afnr_iou}\n\nafnr{afnr}\n\naf1_iou{af1_iou}\n\naf1{af1}'
         outfile.write(args)
 
 
@@ -459,19 +493,28 @@ if __name__ == '__main__':
     binary2json(
         path = '/mnt/sdg/maxs',
         data_set = 'LIVECell',
-        data_subset = 'extra',
-        model = 'base_128',
-        checkpoint = 20000,
-        mode = 'eval'
+        data_type = 'per_celltype',
+        data_subset = 'BV2',
+        subset_type = 'test',
+        annot_type = 'soma',
+        mode = 'eval',
+        model = 'baseline',
+        checkpoint = 2000,
+        print_separator = '$',
     )
-
+    
     # Evaluate predictions
     evaluate(
         path = '/mnt/sdg/maxs',
         data_set = 'LIVECell',
-        data_subset = 'extra',
-        model = 'base_128',
-        checkpoint = 20000,
-        mode = 'from_bin' 
+        data_type = 'per_celltype',
+        data_subset = 'BV2',
+        subset_type = 'test',
+        annot_type = 'soma',
+        mode = 'original',
+        model = 'baseline',
+        checkpoint = 2000,
+        print_separator = '$',
     )
+    
     print('\n\n', end='')

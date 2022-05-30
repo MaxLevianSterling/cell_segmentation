@@ -1,6 +1,7 @@
 import torch
 import torch.nn.init    as init
 from basic_blocks       import * 
+from math               import sqrt
 
 
 class Conv_residual_conv(nn.Module):
@@ -12,13 +13,20 @@ class Conv_residual_conv(nn.Module):
         act_fn, 
         small_chan, 
         large_chan,
-        act_fn_output=None
+        bn,
+        act_after_bn,
+        bn_momentum,
+        act_fn_output=None,
     ):
         """ Args:
             direction (string): sampling direction
             act_fn (nn.Module): activation function
-            in_chan (int): input channel depth
-            out_chan (int): output channel depth
+            small_chan (int): smallest channel depth 
+                in residual block
+            large_chan (int): largest channel depth 
+                in residual block
+            act_fn_output (nn.Module): activation function
+                for the last residual block
         """
     
         # Manage nn.Module inheritance
@@ -27,43 +35,59 @@ class Conv_residual_conv(nn.Module):
         # Define first convolutional block
         if direction == 'encoder' or direction == 'bridge':
             self.conv_1 = conv_block(
-                act_fn,
-                small_chan, 
-                large_chan, 
+                act_fn=act_fn,
+                in_chan=small_chan, 
+                out_chan=large_chan, 
+                bn=bn, 
+                act_after_bn=act_after_bn, 
+                bn_momentum=bn_momentum,
             )
         elif direction == 'decoder' or direction == 'out':
             self.conv_1 = conv_block(
-                act_fn,
-                large_chan, 
-                large_chan, 
+                act_fn=act_fn,
+                in_chan=large_chan, 
+                out_chan=large_chan, 
+                bn=bn, 
+                act_after_bn=act_after_bn, 
+                bn_momentum=bn_momentum,
             )
 
         # Define residual block
         self.conv_2 = res_block(
-            act_fn,
-            large_chan, 
+            act_fn=act_fn,
+            chan=large_chan, 
+            bn=bn, 
+            act_after_bn=act_after_bn, 
+            bn_momentum=bn_momentum,
         )
 
         # Define last convolutional block
         if direction == 'encoder':
             self.conv_3 = conv_block(
-                act_fn,
-                large_chan, 
-                large_chan, 
+                act_fn=act_fn,
+                in_chan=large_chan, 
+                out_chan=large_chan, 
+                bn=bn, 
+                act_after_bn=act_after_bn, 
+                bn_momentum=bn_momentum,
             )
         elif direction == 'decoder' or direction == 'bridge':
             self.conv_3 = conv_block(
-                act_fn,
-                large_chan, 
-                small_chan, 
+                act_fn=act_fn,
+                in_chan=large_chan, 
+                out_chan=small_chan, 
+                bn=bn, 
+                act_after_bn=act_after_bn, 
+                bn_momentum=bn_momentum,
             )
         elif direction == 'out':
             self.conv_3 = conv_block(
-                act_fn_output,
-                large_chan, 
-                small_chan, 
-                no_batchnorm2d='yes',
-                no_act_fn=''
+                act_fn=act_fn_output,
+                in_chan=large_chan, 
+                out_chan=small_chan, 
+                bn=False, 
+                act_after_bn=False, 
+                bn_momentum=bn_momentum,
             )
 
     def forward(self, input):
@@ -92,6 +116,15 @@ class FusionGenerator(nn.Module):
         act_fn_encode,
         act_fn_decode,
         act_fn_output,
+        init_name,
+        init_gain,
+        init_param,
+        fan_mode,
+        act_a_trans, 
+        bn_a_trans, 
+        bn,
+        act_after_bn,
+        bn_momentum,
     ):
         """ Args:
             in_chan (int): input channel depth
@@ -114,91 +147,148 @@ class FusionGenerator(nn.Module):
 
         # Define encoder
         self.down_1 = Conv_residual_conv(
-            'encoder',
-            act_fn_encode,
+            direction='encoder',
+            act_fn=act_fn_encode,
             small_chan=in_chan, 
             large_chan=ngf, 
+            bn=bn, 
+            act_after_bn=act_after_bn, 
+            bn_momentum=bn_momentum,
         )
         self.pool_1 = maxpool()
         self.drop_1 = spatial_dropout(spat_drop_p)
         self.down_2 = Conv_residual_conv(
-            'encoder',
-            act_fn_encode,
+            direction='encoder',
+            act_fn=act_fn_encode,
             small_chan=ngf, 
-            large_chan=ngf * 2, 
+            large_chan=ngf * 2,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
         )
         self.pool_2 = maxpool()
         self.drop_2 = spatial_dropout(spat_drop_p)
         self.down_3 = Conv_residual_conv(
-            'encoder',
-            act_fn_encode,
+            direction='encoder',
+            act_fn=act_fn_encode,
             small_chan=ngf * 2, 
             large_chan=ngf * 4, 
+            bn=bn, 
+            act_after_bn=act_after_bn, 
+            bn_momentum=bn_momentum,
         )
         self.pool_3 = maxpool()
         self.drop_3 = spatial_dropout(spat_drop_p)
         self.down_4 = Conv_residual_conv(
-            'encoder',
-            act_fn_encode,
+            direction='encoder',
+            act_fn=act_fn_encode,
             small_chan=ngf * 4, 
-            large_chan=ngf * 8, 
+            large_chan=ngf * 8,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
         )
         self.pool_4 = maxpool()
         self.drop_4 = spatial_dropout(spat_drop_p)
 
         # Define bridge
         self.bridge = Conv_residual_conv(
-            'bridge',
-            act_fn_decode,
+            direction='bridge',
+            act_fn=act_fn_decode,
             small_chan=ngf * 8, 
-            large_chan=ngf * 16, 
+            large_chan=ngf * 16,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
         )
 
         # Define decoder
         self.drop_5 = spatial_dropout(spat_drop_p)
-        self.deconv_1 = conv_trans_block(ngf * 8)
+        self.deconv_1 = conv_trans_block(
+            act_fn=act_fn_decode, 
+            chan=ngf * 8, 
+            act_a_trans=act_a_trans, 
+            bn_a_trans=bn_a_trans, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
+        )
         self.up_1 = Conv_residual_conv(
-            'decoder',
-            act_fn_decode,
+            direction='decoder',
+            act_fn=act_fn_decode,
             large_chan=ngf * 8, 
-            small_chan=ngf * 4, 
+            small_chan=ngf * 4,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
         )
         self.drop_6 = spatial_dropout(spat_drop_p)
-        self.deconv_2 = conv_trans_block(ngf * 4)
+        self.deconv_2 = conv_trans_block(
+            act_fn=act_fn_decode, 
+            chan=ngf * 4, 
+            act_a_trans=act_a_trans, 
+            bn_a_trans=bn_a_trans, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
+        )
         self.up_2 = Conv_residual_conv(
-            'decoder',
-            act_fn_decode,
+            direction='decoder',
+            act_fn=act_fn_decode,
             large_chan=ngf * 4, 
-            small_chan=ngf * 2, 
+            small_chan=ngf * 2,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
         )
         self.drop_7 = spatial_dropout(spat_drop_p)
-        self.deconv_3 = conv_trans_block(ngf * 2)
+        self.deconv_3 = conv_trans_block(
+            act_fn=act_fn_decode, 
+            chan=ngf * 2, 
+            act_a_trans=act_a_trans, 
+            bn_a_trans=bn_a_trans, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
+        )
         self.up_3 = Conv_residual_conv(
-            'decoder',
-            act_fn_decode,
+            direction='decoder',
+            act_fn=act_fn_decode,
             large_chan=ngf * 2, 
-            small_chan=ngf, 
+            small_chan=ngf,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
         )
         self.drop_8 = spatial_dropout(spat_drop_p)
-        self.deconv_4 = conv_trans_block(ngf)
+        self.deconv_4 = conv_trans_block(
+            act_fn=act_fn_decode, 
+            chan=ngf, 
+            act_a_trans=act_a_trans, 
+            bn_a_trans=bn_a_trans, 
+            act_after_bn=act_after_bn,
+            bn_momentum=bn_momentum,
+        )
         self.up_4 = Conv_residual_conv(
-            'out',
-            act_fn_decode,
+            direction='out',
+            act_fn=act_fn_decode,
             large_chan=ngf, 
-            small_chan=out_chan, 
+            small_chan=out_chan,  
+            bn=bn, 
+            act_after_bn=act_after_bn,
             act_fn_output=act_fn_output,
+            bn_momentum=bn_momentum,
         )
 
-        # Initialize weights and biases
+        #Initialize weights and biases
         with torch.no_grad():
-            for iM, m in enumerate(self.modules()):
-                if isinstance(m, nn.Conv2d):
-                    # Choosing 'fan_out' preserves the magnitudes in the backwards pass.
-                    # Backwards pass more chaotic because different celltypes, magnitudes
-                    init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-                    init.zeros_(m.bias)
-                elif isinstance(m, nn.ConvTranspose2d):
-                    init.kaiming_uniform_(m.weight, mode='fan_out', nonlinearity='relu')
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                    if init_name == 'XU':
+                        init.xavier_uniform_(m.weight, gain=init.calculate_gain(init_gain, init_param))
+                    if init_name == 'XN':
+                        init.xavier_normal_(m.weight, gain=init.calculate_gain(init_gain, init_param))                    
+                    if init_name == 'KU':
+                        init.kaiming_uniform_(m.weight, mode=fan_mode, nonlinearity='relu')
+                    if init_name == 'KN':
+                        init.kaiming_normal_(m.weight, mode=fan_mode, nonlinearity='relu')                      
                     init.zeros_(m.bias)
                 elif isinstance(m, nn.BatchNorm2d):
                     init.normal_(m.weight, mean=1.0, std=0.02)
